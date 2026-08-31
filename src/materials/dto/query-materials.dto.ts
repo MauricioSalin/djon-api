@@ -15,6 +15,10 @@ export class QueryMaterialsDto {
 
   @IsOptional()
   @IsMongoId()
+  courseId?: string;
+
+  @IsOptional()
+  @IsMongoId()
   authorId?: string;
 
   @IsOptional()

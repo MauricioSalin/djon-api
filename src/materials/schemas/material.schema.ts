@@ -55,6 +55,9 @@ export class Material {
   })
   categoryId?: Types.ObjectId;
 
+  @Prop({ type: Types.ObjectId, ref: 'Course', index: true })
+  courseId?: Types.ObjectId;
+
   @Prop()
   coverImage?: string;
 

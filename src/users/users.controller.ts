@@ -10,14 +10,17 @@ import {
 } from '@nestjs/common';
 import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
 import { CurrentUser } from '../common/decorators/current-user.decorator';
+import { Permissions } from '../common/decorators/permissions.decorator';
 import { Roles } from '../common/decorators/roles.decorator';
 import { Role } from '../common/enums/role.enum';
+import { Permission } from '../common/enums/permission.enum';
 import type { AuthUser } from '../common/interfaces/auth-user.interface';
 import { CreateUserDto } from './dto/create-user.dto';
 import { ChangePasswordDto } from './dto/change-password.dto';
 import { QueryUsersDto } from './dto/query-users.dto';
 import { UpdateMeDto } from './dto/update-me.dto';
 import { UpdateUserDto } from './dto/update-user.dto';
+import { UpdatePermissionsDto } from './dto/update-permissions.dto';
 import { UsersService } from './users.service';
 
 @ApiTags('users')
@@ -70,15 +73,24 @@ export class UsersController {
     return this.usersService.updateByManager(id, dto, actor);
   }
 
-  @Delete(':id')
+  @Patch(':id/permissions')
   @Roles(Role.Admin)
+  updatePermissions(
+    @Param('id') id: string,
+    @Body() dto: UpdatePermissionsDto,
+  ) {
+    return this.usersService.updatePermissions(id, dto.permissions);
+  }
+
+  @Delete(':id')
+  @Permissions(Permission.UsersManage)
   deactivate(@Param('id') id: string, @CurrentUser() actor: AuthUser) {
     return this.usersService.deactivate(id, actor);
   }
 
   @Post(':id/restore')
-  @Roles(Role.Admin)
-  restore(@Param('id') id: string) {
-    return this.usersService.restore(id);
+  @Permissions(Permission.UsersManage)
+  restore(@Param('id') id: string, @CurrentUser() actor: AuthUser) {
+    return this.usersService.restore(id, actor);
   }
 }

@@ -6,13 +6,13 @@ import {
   Query,
 } from '@nestjs/common';
 import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
-import { Roles } from '../common/decorators/roles.decorator';
-import { Role } from '../common/enums/role.enum';
+import { Permissions } from '../common/decorators/permissions.decorator';
+import { Permission } from '../common/enums/permission.enum';
 import { AuditService } from './audit.service';
 
 @ApiTags('audit-logs')
 @ApiBearerAuth()
-@Roles(Role.Admin)
+@Permissions(Permission.AuditRead)
 @Controller('audit-logs')
 export class AuditController {
   constructor(private readonly auditService: AuditService) {}

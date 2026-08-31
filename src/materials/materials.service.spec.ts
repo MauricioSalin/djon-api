@@ -2,6 +2,7 @@ import { Types } from 'mongoose';
 import { Role } from '../common/enums/role.enum';
 import type { AuthUser } from '../common/interfaces/auth-user.interface';
 import { MaterialsService } from './materials.service';
+import { MaterialCategoryType } from './schemas/material-category.schema';
 import { MaterialStatus } from './schemas/material.schema';
 
 describe('MaterialsService - capa automática', () => {
@@ -19,7 +20,10 @@ describe('MaterialsService - capa automática', () => {
     })),
   };
   const categoryModel = {
-    exists: jest.fn().mockResolvedValue(true),
+    findOne: jest.fn().mockResolvedValue({
+      _id: new Types.ObjectId(categoryId),
+      type: MaterialCategoryType.Library,
+    }),
   };
   const usersService = {
     findActiveByRoles: jest.fn().mockResolvedValue([]),
@@ -31,6 +35,8 @@ describe('MaterialsService - capa automática', () => {
   const service = new MaterialsService(
     materialModel as never,
     categoryModel as never,
+    {} as never,
+    {} as never,
     usersService as never,
     notificationsService as never,
     filesService as never,
@@ -101,6 +107,28 @@ describe('MaterialsService - capa automática', () => {
     expect(createdBody).not.toContain('style');
   });
 
+  it('preserva somente vídeos incorporados do YouTube', async () => {
+    await service.create(
+      {
+        title: 'Material com vídeo',
+        categoryId,
+        body: '<div data-video-layout="left" data-video-width="50%"><iframe src="https://www.youtube-nocookie.com/embed/abcDEF123" title="Aula" loading="lazy" allowfullscreen></iframe></div><iframe src="https://malicioso.example/video"></iframe>',
+      },
+      actor,
+    );
+
+    const createCalls = materialModel.create.mock.calls as unknown as Array<
+      [Record<string, unknown>]
+    >;
+    const createdBody = createCalls[0][0].body as string;
+    expect(createdBody).toContain('data-video-layout="left"');
+    expect(createdBody).toContain('data-video-width="50%"');
+    expect(createdBody).toContain(
+      'src="https://www.youtube-nocookie.com/embed/abcDEF123"',
+    );
+    expect(createdBody).not.toContain('malicioso.example');
+  });
+
   it('salva rascunho incompleto sem notificar alunos', async () => {
     await service.create(
       {
@@ -117,7 +145,7 @@ describe('MaterialsService - capa automática', () => {
         status: MaterialStatus.Draft,
       }),
     );
-    expect(categoryModel.exists).not.toHaveBeenCalled();
+    expect(categoryModel.findOne).not.toHaveBeenCalled();
     expect(usersService.findActiveByRoles).not.toHaveBeenCalled();
     expect(notificationsService.createForRecipients).not.toHaveBeenCalled();
   });

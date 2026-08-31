@@ -42,14 +42,14 @@ export class CreateBookingDto {
   @IsDateString()
   date!: string;
 
-  @Matches(/^([01]\d|2[0-3]):00$/)
+  @Matches(/^([01]\d|2[0-3]):(?:00|30)$/)
   time!: string;
 
   @IsOptional()
   @IsInt()
-  @Min(60)
+  @Min(30)
   @Max(480)
-  @IsDivisibleBy(60)
+  @IsDivisibleBy(30)
   durationMinutes?: number;
 
   @IsEnum(BookingType)

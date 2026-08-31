@@ -1,5 +1,6 @@
 import { Type } from 'class-transformer';
 import {
+  IsBoolean,
   IsEmail,
   IsOptional,
   IsString,
@@ -8,6 +9,7 @@ import {
   ValidateNested,
 } from 'class-validator';
 import { SocialLinksDto } from './social-links.dto';
+import { LatestReleaseDto } from './latest-release.dto';
 
 export class UpdateMeDto {
   @IsOptional()
@@ -15,6 +17,11 @@ export class UpdateMeDto {
   @MinLength(2)
   @MaxLength(150)
   name?: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(150)
+  projectName?: string;
 
   @IsOptional()
   @IsEmail()
@@ -42,4 +49,13 @@ export class UpdateMeDto {
   @ValidateNested()
   @Type(() => SocialLinksDto)
   socials?: SocialLinksDto;
+
+  @IsOptional()
+  @ValidateNested()
+  @Type(() => LatestReleaseDto)
+  latestRelease?: LatestReleaseDto;
+
+  @IsOptional()
+  @IsBoolean()
+  showAcademicProgress?: boolean;
 }

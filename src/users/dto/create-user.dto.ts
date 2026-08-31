@@ -15,6 +15,7 @@ import {
 } from 'class-validator';
 import { Role } from '../../common/enums/role.enum';
 import { SocialLinksDto } from './social-links.dto';
+import { LatestReleaseDto } from './latest-release.dto';
 
 export class CreateUserDto {
   @IsString()
@@ -25,9 +26,15 @@ export class CreateUserDto {
   @IsEmail()
   email!: string;
 
+  @IsOptional()
   @IsString()
   @MinLength(8)
-  password!: string;
+  password?: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(150)
+  projectName?: string;
 
   @IsEnum(Role)
   role!: Role;
@@ -74,4 +81,9 @@ export class CreateUserDto {
   @ValidateNested()
   @Type(() => SocialLinksDto)
   socials?: SocialLinksDto;
+
+  @IsOptional()
+  @ValidateNested()
+  @Type(() => LatestReleaseDto)
+  latestRelease?: LatestReleaseDto;
 }

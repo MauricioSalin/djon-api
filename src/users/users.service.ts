@@ -8,11 +8,15 @@ import {
 } from '@nestjs/common';
 import { InjectModel } from '@nestjs/mongoose';
 import { compare, hash } from 'bcryptjs';
+import { randomBytes } from 'node:crypto';
 import { Model, Types } from 'mongoose';
 import { Role } from '../common/enums/role.enum';
+import { Permission } from '../common/enums/permission.enum';
 import { AuthUser } from '../common/interfaces/auth-user.interface';
+import { actorHasPermission } from '../common/permissions';
 import { FilesService } from '../files/files.service';
 import { UnitsService } from '../units/units.service';
+import { MailService } from '../mail/mail.service';
 import { CreateUserDto } from './dto/create-user.dto';
 import { ChangePasswordDto } from './dto/change-password.dto';
 import { QueryUsersDto } from './dto/query-users.dto';
@@ -26,22 +30,56 @@ export class UsersService {
     @InjectModel(User.name) private readonly userModel: Model<UserDocument>,
     private readonly filesService: FilesService,
     private readonly unitsService: UnitsService,
+    private readonly mailService: MailService,
   ) {}
 
   async create(dto: CreateUserDto, actor?: AuthUser): Promise<UserDocument> {
-    if (actor?.role === Role.Professor && dto.role !== Role.Student) {
+    const delegatedUserManager = actorHasPermission(
+      actor,
+      Permission.UsersManage,
+    );
+    if (actor?.role === Role.Professor && dto.role === Role.Admin) {
+      throw new ForbiddenException(
+        'Somente administradores podem cadastrar administradores.',
+      );
+    }
+    if (
+      actor?.role === Role.Professor &&
+      !delegatedUserManager &&
+      dto.role !== Role.Student
+    ) {
       throw new ForbiddenException('Professor só pode cadastrar alunos.');
     }
+    if (!dto.password && !(actor && dto.role === Role.Student)) {
+      throw new BadRequestException('Senha é obrigatória para este usuário.');
+    }
     await this.validateManagedUserUnit(dto.role, dto.unitId);
+    const temporaryPassword = dto.password ?? this.generateTemporaryPassword();
     try {
       const user = await this.userModel.create({
         ...dto,
         trainingHoursLimit:
-          dto.role === Role.Student ? (dto.trainingHoursLimit ?? 8) : undefined,
+          dto.role === Role.Student
+            ? (dto.trainingHoursLimit ?? 15)
+            : undefined,
         email: dto.email.toLowerCase().trim(),
-        passwordHash: await hash(dto.password, 12),
+        passwordHash: await hash(temporaryPassword, 12),
+        passwordChangeRequired: Boolean(actor && dto.role === Role.Student),
       });
-      await user.populate('unitId', 'key label shortLabel active');
+      if (actor && dto.role === Role.Student) {
+        try {
+          await this.mailService.sendTemporaryPassword({
+            userId: String(user.id),
+            name: user.name,
+            email: user.email,
+            temporaryPassword,
+          });
+        } catch (error) {
+          await user.deleteOne();
+          throw error;
+        }
+      }
+      await user.populate('unitId', 'key label shortLabel active timezone');
       return user;
     } catch (error: unknown) {
       this.handleDuplicate(error);
@@ -51,7 +89,10 @@ export class UsersService {
 
   async findAll(query: QueryUsersDto, actor?: AuthUser) {
     const filter: Record<string, unknown> = {};
-    if (!(actor?.role === Role.Admin && query.includeInactive)) {
+    const canManageUsers =
+      actor?.role === Role.Admin ||
+      actor?.permissions?.includes(Permission.UsersManage);
+    if (!(canManageUsers && query.includeInactive)) {
       filter.active = true;
     }
     if (actor?.role === Role.Student) {
@@ -69,6 +110,7 @@ export class UsersService {
         .replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
       filter.$or = [
         { name: { $regex: escaped, $options: 'i' } },
+        { projectName: { $regex: escaped, $options: 'i' } },
         { email: { $regex: escaped, $options: 'i' } },
         { whatsapp: { $regex: escaped, $options: 'i' } },
       ];
@@ -79,8 +121,8 @@ export class UsersService {
       this.userModel
         .find(filter)
         .select(
-          actor?.role === Role.Admin
-            ? '-passwordHash +cpf +trainingHoursLimit'
+          canManageUsers
+            ? '-passwordHash +cpf +trainingHoursLimit +permissions'
             : '-passwordHash -cpf -trainingHoursLimit',
         )
         .populate('unitId', 'key label shortLabel active')
@@ -96,7 +138,8 @@ export class UsersService {
 
   async findOne(id: string, actor: AuthUser) {
     this.ensureObjectId(id);
-    const includePrivate = actor.id === id || actor.role === Role.Admin;
+    const includePrivate =
+      actor.id === id || actorHasPermission(actor, Permission.UsersManage);
     const query = this.userModel.findById(id).select('-passwordHash');
     if (includePrivate) query.select('+cpf +trainingHoursLimit');
     query.populate('unitId', 'key label shortLabel active');
@@ -110,7 +153,7 @@ export class UsersService {
     this.ensureObjectId(id);
     const user = await this.userModel
       .findById(id)
-      .select('-passwordHash +cpf +trainingHoursLimit')
+      .select('+cpf +trainingHoursLimit +permissions')
       .populate('unitId', 'key label shortLabel active')
       .lean({ virtuals: true })
       .exec();
@@ -135,6 +178,7 @@ export class UsersService {
       throw new UnauthorizedException('Senha atual inválida.');
     }
     user.passwordHash = await hash(dto.newPassword, 12);
+    user.passwordChangeRequired = false;
     await user.save();
     return { changed: true };
   }
@@ -144,13 +188,31 @@ export class UsersService {
     const target = await this.userModel.findById(id).exec();
     if (!target || !target.active)
       throw new NotFoundException('Usuário não encontrado.');
-    if (actor.role === Role.Professor && target.role !== Role.Student) {
+    const delegatedUserManager = actorHasPermission(
+      actor,
+      Permission.UsersManage,
+    );
+    if (actor.role === Role.Professor && target.role === Role.Admin) {
+      throw new ForbiddenException(
+        'Somente administradores podem editar administradores.',
+      );
+    }
+    if (
+      actor.role === Role.Professor &&
+      !delegatedUserManager &&
+      target.role !== Role.Student
+    ) {
       throw new ForbiddenException(
         'Professor só pode editar perfis de alunos.',
       );
     }
 
     const targetRole = dto.role ?? target.role;
+    if (actor.role === Role.Professor && targetRole === Role.Admin) {
+      throw new ForbiddenException(
+        'Somente administradores podem atribuir a função de administrador.',
+      );
+    }
     await this.validateManagedUserUnit(
       targetRole,
       dto.unitId ?? target.unitId?.toString(),
@@ -159,8 +221,8 @@ export class UsersService {
     const update: Record<string, unknown> = { ...dto };
     delete update.password;
     if (dto.password) update.passwordHash = await hash(dto.password, 12);
-    if (actor.role === Role.Professor) {
-      const allowed = ['name', 'email', 'whatsapp', 'unitId'];
+    if (actor.role === Role.Professor && !delegatedUserManager) {
+      const allowed = ['name', 'projectName', 'email', 'whatsapp', 'unitId'];
       Object.keys(update).forEach((key) => {
         if (!allowed.includes(key)) delete update[key];
       });
@@ -177,6 +239,13 @@ export class UsersService {
       throw new ForbiddenException('Não é possível desativar a própria conta.');
     }
     this.ensureObjectId(id);
+    const target = await this.userModel.findById(id).exec();
+    if (!target) throw new NotFoundException('Usuário não encontrado.');
+    if (actor.role !== Role.Admin && target.role === Role.Admin) {
+      throw new ForbiddenException(
+        'Somente administradores podem desativar administradores.',
+      );
+    }
     const user = await this.userModel
       .findByIdAndUpdate(
         id,
@@ -188,8 +257,15 @@ export class UsersService {
     return { id, active: false };
   }
 
-  async restore(id: string) {
+  async restore(id: string, actor: AuthUser) {
     this.ensureObjectId(id);
+    const target = await this.userModel.findById(id).exec();
+    if (!target) throw new NotFoundException('Usuário não encontrado.');
+    if (actor.role !== Role.Admin && target.role === Role.Admin) {
+      throw new ForbiddenException(
+        'Somente administradores podem restaurar administradores.',
+      );
+    }
     const user = await this.userModel
       .findByIdAndUpdate(
         id,
@@ -201,10 +277,29 @@ export class UsersService {
     return user;
   }
 
+  async updatePermissions(id: string, permissions: Permission[]) {
+    this.ensureObjectId(id);
+    const user = await this.userModel
+      .findOneAndUpdate(
+        { _id: id, role: Role.Professor },
+        { permissions },
+        { returnDocument: 'after', runValidators: true },
+      )
+      .select('+permissions')
+      .populate('unitId', 'key label shortLabel active timezone')
+      .exec();
+    if (!user) {
+      throw new BadRequestException(
+        'Privilégios extras só podem ser atribuídos a professores.',
+      );
+    }
+    return user;
+  }
+
   async findForAuthentication(email: string): Promise<UserDocument | null> {
     return this.userModel
       .findOne({ email: email.toLowerCase().trim() })
-      .select('+passwordHash')
+      .select('+passwordHash +permissions')
       .exec();
   }
 
@@ -228,16 +323,39 @@ export class UsersService {
     this.ensureObjectId(id);
     const user = await this.userModel
       .findOne({ _id: id, active: true })
-      .select('email role')
+      .select('email role unitId +permissions')
       .lean()
       .exec();
     if (!user) throw new UnauthorizedException('Sessão sem usuário ativo.');
-    return { id, email: user.email, role: user.role };
+    return {
+      id,
+      email: user.email,
+      role: user.role,
+      unitId: user.unitId?.toString(),
+      permissions: user.permissions ?? [],
+    };
   }
 
   async findActiveByRoles(roles: Role[]) {
     return this.userModel
       .find({ active: true, role: { $in: roles } })
+      .select('_id email name role')
+      .lean()
+      .exec();
+  }
+
+  async findActiveReviewers() {
+    return this.userModel
+      .find({
+        active: true,
+        $or: [
+          { role: Role.Admin },
+          {
+            role: Role.Professor,
+            permissions: Permission.BookingsReview,
+          },
+        ],
+      })
       .select('_id email name role')
       .lean()
       .exec();
@@ -265,7 +383,7 @@ export class UsersService {
     try {
       const previous = await this.userModel
         .findById(id)
-        .select('avatar banner')
+        .select('avatar banner latestRelease.cover')
         .lean()
         .exec();
       const user = await this.userModel
@@ -286,10 +404,12 @@ export class UsersService {
       const previousFileIds = this.filesService.extractFileIds([
         previous?.avatar,
         previous?.banner,
+        previous?.latestRelease?.cover,
       ]);
       const currentFileIds = this.filesService.extractFileIds([
         user.avatar,
         user.banner,
+        user.latestRelease?.cover,
       ]);
       await this.filesService.removeFileIds(
         [...previousFileIds].filter((fileId) => !currentFileIds.has(fileId)),
@@ -332,5 +452,9 @@ export class UsersService {
         'E-mail, CPF ou identificador já cadastrado.',
       );
     }
+  }
+
+  private generateTemporaryPassword() {
+    return `DjOn!${randomBytes(7).toString('base64url')}9a`;
   }
 }

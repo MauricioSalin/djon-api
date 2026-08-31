@@ -10,7 +10,9 @@ import {
 } from '@nestjs/common';
 import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
 import { CurrentUser } from '../common/decorators/current-user.decorator';
+import { Permissions } from '../common/decorators/permissions.decorator';
 import { Roles } from '../common/decorators/roles.decorator';
+import { Permission } from '../common/enums/permission.enum';
 import { Role } from '../common/enums/role.enum';
 import type { AuthUser } from '../common/interfaces/auth-user.interface';
 import { BookingsService } from './bookings.service';
@@ -50,6 +52,7 @@ export class BookingsController {
     @Query('equipmentId') equipmentId?: string,
     @Query('excludeBookingId') excludeBookingId?: string,
     @Query('durationMinutes') durationMinutes?: string,
+    @CurrentUser() actor?: AuthUser,
   ) {
     return this.bookingsService.availability(
       date,
@@ -59,6 +62,7 @@ export class BookingsController {
       equipmentId,
       excludeBookingId,
       durationMinutes,
+      actor,
     );
   }
 
@@ -71,6 +75,7 @@ export class BookingsController {
     @Query('equipmentId') equipmentId?: string,
     @Query('excludeBookingId') excludeBookingId?: string,
     @Query('durationMinutes') durationMinutes?: string,
+    @CurrentUser() actor?: AuthUser,
   ) {
     return this.bookingsService.monthlyAvailability(
       month,
@@ -80,6 +85,7 @@ export class BookingsController {
       equipmentId,
       excludeBookingId,
       durationMinutes,
+      actor,
     );
   }
 
@@ -90,12 +96,14 @@ export class BookingsController {
 
   @Delete(':id')
   @Roles(Role.Admin, Role.Professor)
-  remove(@Param('id') id: string) {
-    return this.bookingsService.remove(id);
+  @Permissions(Permission.BookingsManage)
+  remove(@Param('id') id: string, @CurrentUser() actor: AuthUser) {
+    return this.bookingsService.remove(id, actor);
   }
 
   @Patch(':id')
   @Roles(Role.Admin, Role.Professor)
+  @Permissions(Permission.BookingsManage)
   update(
     @Param('id') id: string,
     @Body() dto: UpdateBookingDto,
@@ -106,12 +114,14 @@ export class BookingsController {
 
   @Post(':id/approve')
   @Roles(Role.Admin, Role.Professor)
+  @Permissions(Permission.BookingsReview)
   approve(@Param('id') id: string, @CurrentUser() actor: AuthUser) {
     return this.bookingsService.approve(id, actor);
   }
 
   @Post(':id/reject')
   @Roles(Role.Admin, Role.Professor)
+  @Permissions(Permission.BookingsReview)
   reject(
     @Param('id') id: string,
     @Body() dto: ReviewBookingDto,

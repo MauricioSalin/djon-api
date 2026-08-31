@@ -27,6 +27,10 @@ export class CreateMaterialDto {
   categoryId?: string;
 
   @IsOptional()
+  @IsMongoId()
+  courseId?: string;
+
+  @IsOptional()
   @IsEnum(MaterialStatus)
   status?: MaterialStatus;
 

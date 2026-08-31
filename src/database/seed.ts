@@ -24,6 +24,9 @@ const collectionNames = [
   'bookings',
   'materialcategories',
   'materials',
+  'courses',
+  'cohorts',
+  'lessons',
   'notifications',
   'pushsubscriptions',
   'auditlogs',
@@ -78,7 +81,12 @@ async function seed() {
       socials: user.socials ?? {},
       role: user.role,
       unitId: userUnitIds[user.id],
+      trainingHoursLimit: user.role === 'student' ? 15 : undefined,
+      permissions: [],
+      showAcademicProgress: true,
+      passwordChangeRequired: false,
       active: true,
+      unavailableWeekdays: [],
       createdAt: new Date(user.createdAt),
       updatedAt: new Date(user.createdAt),
     };
@@ -98,6 +106,7 @@ async function seed() {
         'https://www.google.com/maps/search/?api=1&query=-30.0303,-51.2261',
       timezone: 'America/Sao_Paulo',
       active: true,
+      unavailableWeekdays: [],
       createdAt: new Date(),
       updatedAt: new Date(),
     },
@@ -113,6 +122,7 @@ async function seed() {
         'https://www.google.com/maps/search/?api=1&query=-27.034794365919073,-48.64911135766976',
       timezone: 'America/Sao_Paulo',
       active: true,
+      unavailableWeekdays: [],
       createdAt: new Date(),
       updatedAt: new Date(),
     },
@@ -129,6 +139,7 @@ async function seed() {
       description: 'Setup profissional com duas CDJs e mixer de quatro canais.',
       unitId: unitIds.poa,
       active: true,
+      unavailableWeekdays: [],
       createdAt: new Date(),
       updatedAt: new Date(),
     },
@@ -247,19 +258,38 @@ async function seed() {
   await db.collection('bookings').insertMany(bookingDocuments);
 
   const categoryIds = new Map<string, Types.ObjectId>();
-  await db.collection('materialcategories').insertMany(
-    data.materialCategories.map((name) => {
-      const _id = new Types.ObjectId();
-      categoryIds.set(name, _id);
-      return {
-        _id,
-        name,
-        active: true,
-        createdAt: new Date(),
-        updatedAt: new Date(),
-      };
-    }),
-  );
+  const categoryDocuments: Array<{
+    _id: Types.ObjectId;
+    name: string;
+    active: boolean;
+    type: string;
+    systemKey?: string;
+    createdAt: Date;
+    updatedAt: Date;
+  }> = data.materialCategories.map((name) => {
+    const _id = new Types.ObjectId();
+    categoryIds.set(name, _id);
+    return {
+      _id,
+      name,
+      active: true,
+      type: 'biblioteca',
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    };
+  });
+  const coursesCategoryId = new Types.ObjectId();
+  categoryIds.set('Cursos', coursesCategoryId);
+  categoryDocuments.push({
+    _id: coursesCategoryId,
+    name: 'Cursos',
+    active: true,
+    type: 'curso',
+    systemKey: 'courses',
+    createdAt: new Date(),
+    updatedAt: new Date(),
+  });
+  await db.collection('materialcategories').insertMany(categoryDocuments);
 
   const assetUrls = await migrateMaterialAssets(db, userIds);
 

@@ -43,6 +43,21 @@ export class Booking {
   @Prop({ type: Types.ObjectId, ref: User.name, required: true, index: true })
   studentId!: Types.ObjectId;
 
+  @Prop({ type: [Types.ObjectId], ref: User.name, default: undefined })
+  studentIds?: Types.ObjectId[];
+
+  @Prop({ default: false, index: true })
+  isClassLesson!: boolean;
+
+  @Prop({ type: Types.ObjectId, ref: 'Cohort', index: true })
+  cohortId?: Types.ObjectId;
+
+  @Prop({ type: Types.ObjectId, ref: 'Lesson', index: true })
+  lessonId?: Types.ObjectId;
+
+  @Prop({ trim: true, maxlength: 150 })
+  cohortName?: string;
+
   @Prop({ type: Types.ObjectId, ref: User.name, index: true })
   professorId?: Types.ObjectId;
 
@@ -64,7 +79,7 @@ export class Booking {
   @Prop({ required: true, match: /^([01]\d|2[0-3]):[0-5]\d$/ })
   time!: string;
 
-  @Prop({ required: true, min: 60, max: 480, default: 60 })
+  @Prop({ required: true, min: 30, max: 480, default: 60 })
   durationMinutes!: number;
 
   @Prop({ type: String, required: true, enum: BookingType, index: true })
@@ -101,6 +116,7 @@ export class Booking {
 export const BookingSchema = SchemaFactory.createForClass(Booking);
 BookingSchema.index({ date: 1, time: 1, status: 1 });
 BookingSchema.index({ studentId: 1, date: 1 });
+BookingSchema.index({ studentIds: 1, date: 1 });
 BookingSchema.index(
   { activeProfessorSlotKeys: 1 },
   { unique: true, sparse: true },

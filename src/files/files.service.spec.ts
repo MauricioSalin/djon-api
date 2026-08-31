@@ -95,4 +95,18 @@ describe('FilesService - limites de upload', () => {
     ).rejects.toThrow('O arquivo excede o limite de 50 MB.');
     expect(clientSend).not.toHaveBeenCalled();
   });
+
+  it('recusa upload direto de vídeo em materiais', async () => {
+    const video = {
+      ...file(1024),
+      originalname: 'aula.mp4',
+      mimetype: 'video/mp4',
+    };
+    await expect(
+      service.upload(video, actor, 'material-attachment'),
+    ).rejects.toThrow(
+      'Vídeos de materiais devem ser incorporados por um link do YouTube.',
+    );
+    expect(clientSend).not.toHaveBeenCalled();
+  });
 });

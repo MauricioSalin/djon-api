@@ -10,8 +10,8 @@ import {
 } from '@nestjs/common';
 import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
 import { CurrentUser } from '../common/decorators/current-user.decorator';
-import { Roles } from '../common/decorators/roles.decorator';
-import { Role } from '../common/enums/role.enum';
+import { Permissions } from '../common/decorators/permissions.decorator';
+import { Permission } from '../common/enums/permission.enum';
 import type { AuthUser } from '../common/interfaces/auth-user.interface';
 import { CategoryDto, DeleteCategoryDto } from './dto/category.dto';
 import { CreateMaterialDto } from './dto/create-material.dto';
@@ -26,7 +26,7 @@ export class MaterialsController {
   constructor(private readonly materialsService: MaterialsService) {}
 
   @Post()
-  @Roles(Role.Admin, Role.Professor)
+  @Permissions(Permission.MaterialsManage)
   create(@Body() dto: CreateMaterialDto, @CurrentUser() actor: AuthUser) {
     return this.materialsService.create(dto, actor);
   }
@@ -42,19 +42,19 @@ export class MaterialsController {
   }
 
   @Post('categories')
-  @Roles(Role.Admin)
+  @Permissions(Permission.MaterialsManage)
   createCategory(@Body() dto: CategoryDto) {
-    return this.materialsService.createCategory(dto.name);
+    return this.materialsService.createCategory(dto.name, dto.type);
   }
 
   @Patch('categories/:id')
-  @Roles(Role.Admin)
+  @Permissions(Permission.MaterialsManage)
   updateCategory(@Param('id') id: string, @Body() dto: CategoryDto) {
     return this.materialsService.updateCategory(id, dto.name);
   }
 
   @Delete('categories/:id')
-  @Roles(Role.Admin)
+  @Permissions(Permission.MaterialsManage)
   deleteCategory(@Param('id') id: string, @Body() dto: DeleteCategoryDto) {
     return this.materialsService.deleteCategory(id, dto.transferToCategoryId);
   }
@@ -65,7 +65,7 @@ export class MaterialsController {
   }
 
   @Patch(':id')
-  @Roles(Role.Admin, Role.Professor)
+  @Permissions(Permission.MaterialsManage)
   update(
     @Param('id') id: string,
     @Body() dto: UpdateMaterialDto,
@@ -75,7 +75,7 @@ export class MaterialsController {
   }
 
   @Delete(':id')
-  @Roles(Role.Admin, Role.Professor)
+  @Permissions(Permission.MaterialsManage)
   remove(@Param('id') id: string, @CurrentUser() actor: AuthUser) {
     return this.materialsService.remove(id, actor);
   }

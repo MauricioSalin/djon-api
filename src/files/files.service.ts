@@ -23,6 +23,7 @@ import { StoredFile, StoredFileDocument } from './schemas/stored-file.schema';
 const PURPOSES = new Set([
   'avatar',
   'banner',
+  'latest-release-cover',
   'material-cover',
   'material-attachment',
   'rich-text',
@@ -32,6 +33,7 @@ const PURPOSES = new Set([
 const IMAGE_PURPOSES = new Set([
   'avatar',
   'banner',
+  'latest-release-cover',
   'material-cover',
   'rich-text',
 ]);
@@ -80,6 +82,14 @@ export class FilesService {
     if (IMAGE_PURPOSES.has(purpose) && !file.mimetype.startsWith('image/')) {
       throw new BadRequestException(
         'Esta finalidade aceita somente arquivos de imagem.',
+      );
+    }
+    if (
+      purpose === 'material-attachment' &&
+      file.mimetype.startsWith('video/')
+    ) {
+      throw new BadRequestException(
+        'Vídeos de materiais devem ser incorporados por um link do YouTube.',
       );
     }
     const safeName = file.originalname

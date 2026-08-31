@@ -9,6 +9,7 @@ import { AuditModule } from './audit/audit.module';
 import { BookingsModule } from './bookings/bookings.module';
 import { JwtAuthGuard } from './common/guards/jwt-auth.guard';
 import { RolesGuard } from './common/guards/roles.guard';
+import { PermissionsGuard } from './common/guards/permissions.guard';
 import { validateEnvironment } from './config/env.validation';
 import { EventsModule } from './events/events.module';
 import { EquipmentsModule } from './equipments/equipments.module';
@@ -20,6 +21,7 @@ import { NotificationsModule } from './notifications/notifications.module';
 import { SearchModule } from './search/search.module';
 import { UnitsModule } from './units/units.module';
 import { UsersModule } from './users/users.module';
+import { CoursesModule } from './courses/courses.module';
 
 @Module({
   imports: [
@@ -45,6 +47,7 @@ import { UsersModule } from './users/users.module';
     BookingsModule,
     EventsModule,
     MaterialsModule,
+    CoursesModule,
     FilesModule,
     LeadsModule,
     SearchModule,
@@ -54,6 +57,7 @@ import { UsersModule } from './users/users.module';
     { provide: APP_GUARD, useClass: ThrottlerGuard },
     { provide: APP_GUARD, useClass: JwtAuthGuard },
     { provide: APP_GUARD, useClass: RolesGuard },
+    { provide: APP_GUARD, useClass: PermissionsGuard },
     { provide: APP_INTERCEPTOR, useClass: AuditInterceptor },
   ],
 })

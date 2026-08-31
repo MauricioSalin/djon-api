@@ -7,6 +7,8 @@ import {
 } from '@nestjs/common';
 import { InjectModel } from '@nestjs/mongoose';
 import { Model, Types } from 'mongoose';
+import { Course, CourseDocument } from '../courses/schemas/course.schema';
+import { Lesson, LessonDocument } from '../courses/schemas/lesson.schema';
 import sanitizeHtml from 'sanitize-html';
 import { Role } from '../common/enums/role.enum';
 import { AuthUser } from '../common/interfaces/auth-user.interface';
@@ -18,8 +20,11 @@ import { QueryMaterialsDto } from './dto/query-materials.dto';
 import { UpdateMaterialDto } from './dto/update-material.dto';
 import { firstMaterialImage } from './material-cover';
 import {
+  COURSES_CATEGORY_KEY,
+  COURSES_CATEGORY_NAME,
   MaterialCategory,
   MaterialCategoryDocument,
+  MaterialCategoryType,
 } from './schemas/material-category.schema';
 import {
   Material,
@@ -34,6 +39,10 @@ export class MaterialsService {
     private readonly materialModel: Model<MaterialDocument>,
     @InjectModel(MaterialCategory.name)
     private readonly categoryModel: Model<MaterialCategoryDocument>,
+    @InjectModel(Course.name)
+    private readonly courseModel: Model<CourseDocument>,
+    @InjectModel(Lesson.name)
+    private readonly lessonModel: Model<LessonDocument>,
     private readonly usersService: UsersService,
     private readonly notificationsService: NotificationsService,
     private readonly filesService: FilesService,
@@ -41,21 +50,24 @@ export class MaterialsService {
 
   async create(dto: CreateMaterialDto, actor: AuthUser) {
     const status = dto.status ?? MaterialStatus.Published;
-    this.ensurePublishable(status, dto.title, dto.categoryId);
-    if (dto.categoryId) await this.ensureCategory(dto.categoryId);
+    const course = dto.courseId
+      ? await this.ensureCourse(dto.courseId, dto.categoryId)
+      : undefined;
+    const categoryId = course ? String(course.categoryId) : dto.categoryId;
+    this.ensurePublishable(status, dto.title, categoryId);
+    if (categoryId) await this.ensureCategory(categoryId, Boolean(course));
     const body = this.sanitize(dto.body);
     const material = await this.materialModel.create({
       ...dto,
       title: dto.title?.trim() ?? '',
-      ...(dto.categoryId
-        ? { categoryId: new Types.ObjectId(dto.categoryId) }
-        : {}),
+      ...(categoryId ? { categoryId: new Types.ObjectId(categoryId) } : {}),
+      ...(dto.courseId ? { courseId: new Types.ObjectId(dto.courseId) } : {}),
       body,
       coverImage: dto.coverImage || firstMaterialImage(body),
       authorId: new Types.ObjectId(actor.id),
       status,
     });
-    if (status === MaterialStatus.Published) {
+    if (status === MaterialStatus.Published && !dto.courseId) {
       await this.notifyPublished(material);
     }
     return this.findOne(String(material.id), actor);
@@ -65,6 +77,7 @@ export class MaterialsService {
     const filter: Record<string, unknown> = this.visibilityFilter(actor);
     if (query.categoryId)
       filter.categoryId = new Types.ObjectId(query.categoryId);
+    if (query.courseId) filter.courseId = new Types.ObjectId(query.courseId);
     if (query.authorId) filter.authorId = new Types.ObjectId(query.authorId);
     if (query.search?.trim()) filter.$text = { $search: query.search.trim() };
     const skip = (query.page - 1) * query.limit;
@@ -72,6 +85,7 @@ export class MaterialsService {
       this.materialModel
         .find(filter)
         .populate('categoryId', 'name')
+        .populate('courseId', 'name description active')
         .populate('authorId', 'name avatar role')
         .sort({ createdAt: -1 })
         .skip(skip)
@@ -80,17 +94,55 @@ export class MaterialsService {
         .exec(),
       this.materialModel.countDocuments(filter).exec(),
     ]);
-    return { items, total, page: query.page, limit: query.limit };
+    if (actor.role !== Role.Student) {
+      return { items, total, page: query.page, limit: query.limit };
+    }
+    const courseMaterialIds = items
+      .filter((item) => item.courseId)
+      .map((item) => item._id);
+    const unlocked = courseMaterialIds.length
+      ? await this.lessonModel
+          .find({
+            materialId: { $in: courseMaterialIds },
+            attendance: {
+              $elemMatch: {
+                studentId: new Types.ObjectId(actor.id),
+                materialReleased: true,
+              },
+            },
+          })
+          .distinct('materialId')
+      : [];
+    const unlockedIds = new Set(unlocked.map(String));
+    return {
+      items: items.map((item) => ({
+        ...item,
+        locked: Boolean(item.courseId && !unlockedIds.has(String(item._id))),
+      })),
+      total,
+      page: query.page,
+      limit: query.limit,
+    };
   }
 
   async findOne(id: string, actor: AuthUser) {
     const material = await this.materialModel
       .findOne({ _id: id, ...this.visibilityFilter(actor) })
       .populate('categoryId', 'name')
+      .populate('courseId', 'name description active')
       .populate('authorId', 'name avatar role')
       .lean({ virtuals: true })
       .exec();
     if (!material) throw new NotFoundException('Material não encontrado.');
+    if (
+      actor.role === Role.Student &&
+      material.courseId &&
+      !(await this.isMaterialUnlocked(material._id, actor.id))
+    ) {
+      throw new ForbiddenException(
+        'Este material será liberado após a conclusão da aula.',
+      );
+    }
     return material;
   }
 
@@ -106,13 +158,24 @@ export class MaterialsService {
       material.body,
       material.attachments,
     ]);
-    if (dto.categoryId) await this.ensureCategory(dto.categoryId);
+    const course = dto.courseId
+      ? await this.ensureCourse(dto.courseId, dto.categoryId)
+      : undefined;
+    const resolvedCategoryId = course
+      ? String(course.categoryId)
+      : dto.categoryId;
+    if (resolvedCategoryId)
+      await this.ensureCategory(
+        resolvedCategoryId,
+        Boolean(course || material.courseId),
+      );
     Object.assign(material, {
       ...dto,
       ...(dto.title !== undefined ? { title: dto.title.trim() } : {}),
-      ...(dto.categoryId
-        ? { categoryId: new Types.ObjectId(dto.categoryId) }
+      ...(resolvedCategoryId
+        ? { categoryId: new Types.ObjectId(resolvedCategoryId) }
         : {}),
+      ...(dto.courseId ? { courseId: new Types.ObjectId(dto.courseId) } : {}),
       ...(dto.body !== undefined ? { body: this.sanitize(dto.body) } : {}),
     });
     if (!material.coverImage) {
@@ -148,13 +211,22 @@ export class MaterialsService {
     return { id, removed: true };
   }
 
-  findCategories() {
+  async findCategories() {
+    await this.ensureCoursesCategory();
     return this.categoryModel.find({ active: true }).sort({ name: 1 }).lean();
   }
 
-  async createCategory(name: string) {
+  async createCategory(
+    name: string,
+    type: MaterialCategoryType = MaterialCategoryType.Library,
+  ) {
+    if (type === MaterialCategoryType.Course) {
+      throw new BadRequestException(
+        'A categoria Cursos é fixa e criada automaticamente.',
+      );
+    }
     try {
-      return await this.categoryModel.create({ name: name.trim() });
+      return await this.categoryModel.create({ name: name.trim(), type });
     } catch (error: unknown) {
       this.handleDuplicate(error);
       throw error;
@@ -162,6 +234,7 @@ export class MaterialsService {
   }
 
   async updateCategory(id: string, name: string) {
+    await this.assertCategoryIsEditable(id);
     try {
       const category = await this.categoryModel.findByIdAndUpdate(
         id,
@@ -179,6 +252,14 @@ export class MaterialsService {
   async deleteCategory(id: string, transferToCategoryId?: string) {
     const category = await this.categoryModel.findById(id);
     if (!category) throw new NotFoundException('Categoria não encontrada.');
+    if (
+      category.systemKey === COURSES_CATEGORY_KEY ||
+      category.type === MaterialCategoryType.Course
+    ) {
+      throw new BadRequestException(
+        'A categoria Cursos não pode ser excluída.',
+      );
+    }
     const count = await this.materialModel.countDocuments({
       categoryId: category._id,
     });
@@ -211,12 +292,101 @@ export class MaterialsService {
     return material;
   }
 
-  private async ensureCategory(id: string) {
+  private async ensureCategory(id: string, allowCourse = false) {
     if (!Types.ObjectId.isValid(id)) {
       throw new NotFoundException('Categoria não encontrada.');
     }
-    const exists = await this.categoryModel.exists({ _id: id, active: true });
-    if (!exists) throw new NotFoundException('Categoria não encontrada.');
+    const category = await this.categoryModel.findOne({
+      _id: id,
+      active: true,
+    });
+    if (!category) throw new NotFoundException('Categoria não encontrada.');
+    if (!allowCourse && category.type === MaterialCategoryType.Course) {
+      throw new BadRequestException(
+        'Materiais da categoria Cursos precisam estar vinculados a um curso.',
+      );
+    }
+  }
+
+  private async assertCategoryIsEditable(id: string) {
+    const category = await this.categoryModel.findById(id);
+    if (!category) throw new NotFoundException('Categoria não encontrada.');
+    if (
+      category.systemKey === COURSES_CATEGORY_KEY ||
+      category.type === MaterialCategoryType.Course
+    ) {
+      throw new BadRequestException('A categoria Cursos não pode ser editada.');
+    }
+  }
+
+  private async ensureCoursesCategory() {
+    let category = await this.categoryModel.findOne({
+      $or: [
+        { systemKey: COURSES_CATEGORY_KEY },
+        { name: COURSES_CATEGORY_NAME },
+      ],
+    });
+    if (!category) {
+      category = await this.categoryModel.create({
+        name: COURSES_CATEGORY_NAME,
+        type: MaterialCategoryType.Course,
+        systemKey: COURSES_CATEGORY_KEY,
+        active: true,
+      });
+    } else {
+      category.name = COURSES_CATEGORY_NAME;
+      category.type = MaterialCategoryType.Course;
+      category.systemKey = COURSES_CATEGORY_KEY;
+      category.active = true;
+      await category.save();
+    }
+    await Promise.all([
+      this.courseModel.updateMany(
+        { categoryId: { $ne: category._id } },
+        { $set: { categoryId: category._id } },
+      ),
+      this.materialModel.updateMany(
+        {
+          courseId: { $exists: true, $ne: null },
+          categoryId: { $ne: category._id },
+        },
+        { $set: { categoryId: category._id } },
+      ),
+      this.categoryModel.updateMany(
+        {
+          _id: { $ne: category._id },
+          type: MaterialCategoryType.Course,
+        },
+        { $set: { active: false } },
+      ),
+    ]);
+    return category;
+  }
+
+  private async ensureCourse(id: string, categoryId?: string) {
+    if (!Types.ObjectId.isValid(id)) {
+      throw new NotFoundException('Curso não encontrado.');
+    }
+    const course = await this.courseModel.findOne({ _id: id, active: true });
+    if (!course) throw new NotFoundException('Curso não encontrado.');
+    if (categoryId && String(course.categoryId) !== categoryId) {
+      throw new BadRequestException(
+        'O curso não pertence à categoria selecionada.',
+      );
+    }
+    return course;
+  }
+
+  private isMaterialUnlocked(materialId: Types.ObjectId, studentId: string) {
+    return this.lessonModel.exists({
+      materialId,
+      attendance: {
+        $elemMatch: {
+          studentId: new Types.ObjectId(studentId),
+          materialReleased: true,
+        },
+      },
+    });
   }
 
   private ensurePublishable(
@@ -281,18 +451,41 @@ export class MaterialsService {
         'a',
         'img',
         'div',
+        'iframe',
       ],
       allowedAttributes: {
         a: ['href', 'target', 'rel'],
         p: ['data-text-align'],
-        div: ['data-text-align', 'data-image-layout', 'data-image-text'],
+        div: [
+          'data-text-align',
+          'data-image-layout',
+          'data-image-text',
+          'data-video-layout',
+          'data-video-text',
+          'data-video-width',
+        ],
         h2: ['data-text-align'],
         h3: ['data-text-align'],
         li: ['data-text-align'],
         blockquote: ['data-text-align'],
         img: ['src', 'alt', 'data-image-width', 'data-image-align'],
+        iframe: [
+          'src',
+          'title',
+          'allow',
+          'allowfullscreen',
+          'loading',
+          'data-video-width',
+          'data-video-align',
+        ],
       },
       allowedSchemes: ['http', 'https'],
+      allowedIframeHostnames: [
+        'youtube.com',
+        'www.youtube.com',
+        'youtube-nocookie.com',
+        'www.youtube-nocookie.com',
+      ],
       transformTags: {
         a: sanitizeHtml.simpleTransform('a', {
           rel: 'noopener noreferrer',

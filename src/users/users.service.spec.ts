@@ -6,12 +6,16 @@ import { FilesService } from '../files/files.service';
 import { UnitsService } from '../units/units.service';
 import { UserDocument } from './schemas/user.schema';
 import { UsersService } from './users.service';
+import { MailService } from '../mail/mail.service';
 
 describe('UsersService', () => {
   const password = 'SenhaTeste@2026';
   let service: UsersService;
   const unitsService = {
     findActiveById: jest.fn(),
+  };
+  const mailService = {
+    sendTemporaryPassword: jest.fn().mockResolvedValue(undefined),
   };
 
   beforeEach(() => {
@@ -20,6 +24,7 @@ describe('UsersService', () => {
       {} as Model<UserDocument>,
       {} as FilesService,
       unitsService as unknown as UnitsService,
+      mailService as unknown as MailService,
     );
   });
 
@@ -113,7 +118,11 @@ describe('UsersService', () => {
     unitsService.findActiveById.mockResolvedValue({ id: unitId });
     const populate = jest.fn().mockResolvedValue(undefined);
     const createdUser = {
+      id: '507f1f77bcf86cd799439014',
+      name: 'Aluno cadastrado pelo professor',
+      email: 'novo.aluno@teste.com',
       populate,
+      deleteOne: jest.fn(),
     } as unknown as UserDocument;
     const create = jest.fn().mockResolvedValue(createdUser);
     const userModel = {
@@ -123,6 +132,7 @@ describe('UsersService', () => {
       userModel,
       {} as FilesService,
       unitsService as unknown as UnitsService,
+      mailService as unknown as MailService,
     );
 
     await expect(
@@ -147,12 +157,19 @@ describe('UsersService', () => {
         email: 'novo.aluno@teste.com',
         role: Role.Student,
         unitId,
+        passwordChangeRequired: true,
       }),
     );
     expect(unitsService.findActiveById).toHaveBeenCalledWith(unitId);
     expect(populate).toHaveBeenCalledWith(
       'unitId',
-      'key label shortLabel active',
+      'key label shortLabel active timezone',
+    );
+    expect(mailService.sendTemporaryPassword).toHaveBeenCalledWith(
+      expect.objectContaining({
+        userId: '507f1f77bcf86cd799439014',
+        email: 'novo.aluno@teste.com',
+      }),
     );
   });
 });

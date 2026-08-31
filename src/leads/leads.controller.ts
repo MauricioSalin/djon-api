@@ -11,8 +11,8 @@ import {
 import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
 import { Throttle } from '@nestjs/throttler';
 import { Public } from '../common/decorators/public.decorator';
-import { Roles } from '../common/decorators/roles.decorator';
-import { Role } from '../common/enums/role.enum';
+import { Permissions } from '../common/decorators/permissions.decorator';
+import { Permission } from '../common/enums/permission.enum';
 import { CreateLeadDto } from './dto/create-lead.dto';
 import { UpdateLeadDto } from './dto/update-lead.dto';
 import { LeadsService } from './leads.service';
@@ -31,21 +31,21 @@ export class LeadsController {
   }
 
   @ApiBearerAuth()
-  @Roles(Role.Admin)
+  @Permissions(Permission.LeadsManage)
   @Get()
   findAll(@Query('status') status?: LeadStatus) {
     return this.leadsService.findAll(status);
   }
 
   @ApiBearerAuth()
-  @Roles(Role.Admin)
+  @Permissions(Permission.LeadsManage)
   @Patch(':id')
   update(@Param('id') id: string, @Body() dto: UpdateLeadDto) {
     return this.leadsService.update(id, dto);
   }
 
   @ApiBearerAuth()
-  @Roles(Role.Admin)
+  @Permissions(Permission.LeadsManage)
   @Delete(':id')
   remove(@Param('id') id: string) {
     return this.leadsService.remove(id);

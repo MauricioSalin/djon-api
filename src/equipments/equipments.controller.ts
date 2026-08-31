@@ -8,8 +8,8 @@ import {
   Post,
 } from '@nestjs/common';
 import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
-import { Roles } from '../common/decorators/roles.decorator';
-import { Role } from '../common/enums/role.enum';
+import { Permissions } from '../common/decorators/permissions.decorator';
+import { Permission } from '../common/enums/permission.enum';
 import { CreateEquipmentDto } from './dto/create-equipment.dto';
 import { UpdateEquipmentDto } from './dto/update-equipment.dto';
 import { EquipmentsService } from './equipments.service';
@@ -26,25 +26,25 @@ export class EquipmentsController {
   }
 
   @Get('admin/all')
-  @Roles(Role.Admin)
+  @Permissions(Permission.EquipmentsManage)
   findAllForAdmin() {
     return this.equipmentsService.findAll(false);
   }
 
   @Post()
-  @Roles(Role.Admin)
+  @Permissions(Permission.EquipmentsManage)
   create(@Body() dto: CreateEquipmentDto) {
     return this.equipmentsService.create(dto);
   }
 
   @Patch(':id')
-  @Roles(Role.Admin)
+  @Permissions(Permission.EquipmentsManage)
   update(@Param('id') id: string, @Body() dto: UpdateEquipmentDto) {
     return this.equipmentsService.update(id, dto);
   }
 
   @Delete(':id')
-  @Roles(Role.Admin)
+  @Permissions(Permission.EquipmentsManage)
   deactivate(@Param('id') id: string) {
     return this.equipmentsService.deactivate(id);
   }

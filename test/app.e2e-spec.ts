@@ -1,23 +1,33 @@
 import { INestApplication } from '@nestjs/common';
 import { getConnectionToken } from '@nestjs/mongoose';
 import { Test } from '@nestjs/testing';
-import { execFileSync } from 'node:child_process';
 import { Connection } from 'mongoose';
+import { MongoMemoryServer } from 'mongodb-memory-server';
 import request from 'supertest';
 import { AuthService } from '../src/auth/auth.service';
 import { BookingType } from '../src/bookings/schemas/booking.schema';
 import { Role } from '../src/common/enums/role.enum';
+import { Permission } from '../src/common/enums/permission.enum';
 import { configureApp } from '../src/configure-app';
 import { EventType } from '../src/events/schemas/event.schema';
 import { EquipmentsService } from '../src/equipments/equipments.service';
 import { UnitsService } from '../src/units/units.service';
 import { UsersService } from '../src/users/users.service';
+import { MailService } from '../src/mail/mail.service';
 
 describe('DJ ON API (e2e)', () => {
   let app: INestApplication;
   let connection: Connection;
-  let mongoContainerName: string;
+  let mongoServer: MongoMemoryServer;
   const password = 'SenhaTeste@2026';
+  const futureDate = (offset: number) => {
+    const value = new Date();
+    value.setUTCDate(value.getUTCDate() + offset);
+    return value.toISOString().slice(0, 10);
+  };
+  const trainingDate = futureDate(2);
+  const originalTrainingDate = futureDate(3);
+  const rescheduledTrainingDate = futureDate(4);
   const tokens: Partial<Record<Role, string>> = {};
   let secondStudentToken: string;
   let managedStudentToken: string;
@@ -34,28 +44,10 @@ describe('DJ ON API (e2e)', () => {
 
   beforeAll(async () => {
     const databaseName = `djon_e2e_${Date.now()}`;
-    mongoContainerName = `djon-api-e2e-${process.pid}`;
-    execFileSync(
-      'docker',
-      [
-        'run',
-        '-d',
-        '--rm',
-        '--name',
-        mongoContainerName,
-        '-p',
-        '127.0.0.1::27017',
-        'mongo:8.0',
-      ],
-      { stdio: 'pipe' },
-    );
-    const publishedPort = execFileSync(
-      'docker',
-      ['port', mongoContainerName, '27017/tcp'],
-      { encoding: 'utf8' },
-    ).trim();
-    const port = publishedPort.slice(publishedPort.lastIndexOf(':') + 1);
-    process.env.MONGODB_URI = `mongodb://127.0.0.1:${port}/${databaseName}`;
+    mongoServer = await MongoMemoryServer.create({
+      instance: { dbName: databaseName },
+    });
+    process.env.MONGODB_URI = mongoServer.getUri(databaseName);
     process.env.JWT_SECRET = 'e2e-secret-with-at-least-32-characters';
     process.env.JWT_EXPIRES_IN_SECONDS = '3600';
     process.env.API_PREFIX = 'api/v1';
@@ -67,7 +59,12 @@ describe('DJ ON API (e2e)', () => {
       );
     const module = await Test.createTestingModule({
       imports: [AppModule],
-    }).compile();
+    })
+      .overrideProvider(MailService)
+      .useValue({
+        sendTemporaryPassword: jest.fn().mockResolvedValue(undefined),
+      })
+      .compile();
     app = module.createNestApplication();
     app.getHttpAdapter().getInstance().set('trust proxy', 1);
     configureApp(app);
@@ -107,6 +104,7 @@ describe('DJ ON API (e2e)', () => {
       password,
       role: Role.Student,
       unitId,
+      trainingHoursLimit: 8,
     });
     await users.create({
       name: 'Aluno Dois',
@@ -147,13 +145,7 @@ describe('DJ ON API (e2e)', () => {
       await connection.dropDatabase();
     }
     await app?.close();
-    if (mongoContainerName) {
-      try {
-        execFileSync('docker', ['stop', mongoContainerName], { stdio: 'pipe' });
-      } catch {
-        // O container pode já ter sido encerrado pelo Docker (--rm).
-      }
-    }
+    await mongoServer?.stop();
   });
 
   it('expõe health e recebe lead sem autenticação', async () => {
@@ -190,6 +182,11 @@ describe('DJ ON API (e2e)', () => {
       .send({ status: 'contatado', internalNotes: 'Contato validado no E2E.' })
       .expect(200)
       .expect(({ body }) => expect(body.status).toBe('contatado'));
+    await request(app.getHttpServer())
+      .delete(`/api/v1/leads/${leadId}`)
+      .set('Authorization', `Bearer ${tokens[Role.Admin]}`)
+      .expect(200)
+      .expect(({ body }) => expect(body.removed).toBe(true));
   });
 
   it('protege rotas e aplica RBAC', async () => {
@@ -235,6 +232,278 @@ describe('DJ ON API (e2e)', () => {
       .expect(({ body }) =>
         expect(body.message).toBe('Unidade é obrigatória para alunos.'),
       );
+  });
+
+  it('aplica e revoga todos os privilégios delegados sem novo login', async () => {
+    const allPermissions = Object.values(Permission);
+    const missingId = '507f1f77bcf86cd799439099';
+    const professorToken = tokens[Role.Professor];
+    const adminToken = tokens[Role.Admin];
+
+    const expectDenied = async () => {
+      const checks = [
+        () =>
+          request(app.getHttpServer())
+            .get('/api/v1/leads')
+            .set('Authorization', `Bearer ${professorToken}`)
+            .expect(403),
+        () =>
+          request(app.getHttpServer())
+            .get('/api/v1/units/admin/all')
+            .set('Authorization', `Bearer ${professorToken}`)
+            .expect(403),
+        () =>
+          request(app.getHttpServer())
+            .get('/api/v1/equipments/admin/all')
+            .set('Authorization', `Bearer ${professorToken}`)
+            .expect(403),
+        () =>
+          request(app.getHttpServer())
+            .get('/api/v1/audit-logs')
+            .set('Authorization', `Bearer ${professorToken}`)
+            .expect(403),
+        () =>
+          request(app.getHttpServer())
+            .delete(`/api/v1/users/${missingId}`)
+            .set('Authorization', `Bearer ${professorToken}`)
+            .expect(403),
+        () =>
+          request(app.getHttpServer())
+            .patch(`/api/v1/bookings/${missingId}`)
+            .set('Authorization', `Bearer ${professorToken}`)
+            .send({ notes: 'sem permissão' })
+            .expect(403),
+        () =>
+          request(app.getHttpServer())
+            .post('/api/v1/bookings')
+            .set('Authorization', `Bearer ${professorToken}`)
+            .send({
+              title: 'Tentativa sem privilégio',
+              date: trainingDate,
+              time: '08:00',
+              type: BookingType.Training,
+              unitId,
+              equipmentId,
+            })
+            .expect(403),
+        () =>
+          request(app.getHttpServer())
+            .post(`/api/v1/bookings/${missingId}/approve`)
+            .set('Authorization', `Bearer ${professorToken}`)
+            .send({})
+            .expect(403),
+        () =>
+          request(app.getHttpServer())
+            .post('/api/v1/courses')
+            .set('Authorization', `Bearer ${professorToken}`)
+            .send({})
+            .expect(403),
+        () =>
+          request(app.getHttpServer())
+            .patch(`/api/v1/courses/lessons/${missingId}/attendance`)
+            .set('Authorization', `Bearer ${professorToken}`)
+            .send({ studentId: missingId, present: true })
+            .expect(404),
+        () =>
+          request(app.getHttpServer())
+            .post('/api/v1/materials')
+            .set('Authorization', `Bearer ${professorToken}`)
+            .send({})
+            .expect(403),
+      ];
+      for (const check of checks) await check();
+    };
+
+    try {
+      await expectDenied();
+      const delegatedChecks: Array<{
+        permission: Permission;
+        run: () => PromiseLike<unknown>;
+      }> = [
+        {
+          permission: Permission.UsersManage,
+          run: () =>
+            request(app.getHttpServer())
+              .delete(`/api/v1/users/${missingId}`)
+              .set('Authorization', `Bearer ${professorToken}`)
+              .expect(404),
+        },
+        {
+          permission: Permission.LeadsManage,
+          run: () =>
+            request(app.getHttpServer())
+              .get('/api/v1/leads')
+              .set('Authorization', `Bearer ${professorToken}`)
+              .expect(200),
+        },
+        {
+          permission: Permission.BookingsManage,
+          run: async () => {
+            await request(app.getHttpServer())
+              .patch(`/api/v1/bookings/${missingId}`)
+              .set('Authorization', `Bearer ${professorToken}`)
+              .send({ notes: 'permitido' })
+              .expect(404);
+            await request(app.getHttpServer())
+              .post('/api/v1/bookings')
+              .set('Authorization', `Bearer ${professorToken}`)
+              .send({
+                title: 'Permissão aplicada',
+                date: trainingDate,
+                time: '08:00',
+                type: BookingType.Training,
+                unitId,
+                equipmentId,
+              })
+              .expect(400);
+          },
+        },
+        {
+          permission: Permission.BookingsReview,
+          run: () =>
+            request(app.getHttpServer())
+              .post(`/api/v1/bookings/${missingId}/approve`)
+              .set('Authorization', `Bearer ${professorToken}`)
+              .send({})
+              .expect(404),
+        },
+        {
+          permission: Permission.CoursesManage,
+          run: () =>
+            request(app.getHttpServer())
+              .post('/api/v1/courses')
+              .set('Authorization', `Bearer ${professorToken}`)
+              .send({})
+              .expect(400),
+        },
+        {
+          permission: Permission.AttendanceManage,
+          run: () =>
+            request(app.getHttpServer())
+              .patch(`/api/v1/courses/lessons/${missingId}/attendance`)
+              .set('Authorization', `Bearer ${professorToken}`)
+              .send({ studentId: missingId, present: true })
+              .expect(404),
+        },
+        {
+          permission: Permission.MaterialsManage,
+          run: () =>
+            request(app.getHttpServer())
+              .post('/api/v1/materials')
+              .set('Authorization', `Bearer ${professorToken}`)
+              .send({})
+              .expect(400),
+        },
+        {
+          permission: Permission.UnitsManage,
+          run: () =>
+            request(app.getHttpServer())
+              .get('/api/v1/units/admin/all')
+              .set('Authorization', `Bearer ${professorToken}`)
+              .expect(200),
+        },
+        {
+          permission: Permission.EquipmentsManage,
+          run: () =>
+            request(app.getHttpServer())
+              .get('/api/v1/equipments/admin/all')
+              .set('Authorization', `Bearer ${professorToken}`)
+              .expect(200),
+        },
+        {
+          permission: Permission.AuditRead,
+          run: () =>
+            request(app.getHttpServer())
+              .get('/api/v1/audit-logs?limit=1')
+              .set('Authorization', `Bearer ${professorToken}`)
+              .expect(200),
+        },
+      ];
+      for (const delegated of delegatedChecks) {
+        await request(app.getHttpServer())
+          .patch(`/api/v1/users/${professorId}/permissions`)
+          .set('Authorization', `Bearer ${adminToken}`)
+          .send({ permissions: [delegated.permission] })
+          .expect(200);
+        await delegated.run();
+      }
+
+      await request(app.getHttpServer())
+        .patch(`/api/v1/users/${professorId}/permissions`)
+        .set('Authorization', `Bearer ${adminToken}`)
+        .send({ permissions: allPermissions })
+        .expect(200)
+        .expect(({ body }) =>
+          expect(body.permissions.sort()).toEqual([...allPermissions].sort()),
+        );
+
+      await request(app.getHttpServer())
+        .get('/api/v1/users/me')
+        .set('Authorization', `Bearer ${professorToken}`)
+        .expect(200)
+        .expect(({ body }) =>
+          expect(body.permissions.sort()).toEqual([...allPermissions].sort()),
+        );
+
+      await request(app.getHttpServer())
+        .get('/api/v1/leads')
+        .set('Authorization', `Bearer ${professorToken}`)
+        .expect(200);
+      await request(app.getHttpServer())
+        .get('/api/v1/units/admin/all')
+        .set('Authorization', `Bearer ${professorToken}`)
+        .expect(200);
+      await request(app.getHttpServer())
+        .get('/api/v1/equipments/admin/all')
+        .set('Authorization', `Bearer ${professorToken}`)
+        .expect(200);
+      await request(app.getHttpServer())
+        .get('/api/v1/audit-logs?limit=1')
+        .set('Authorization', `Bearer ${professorToken}`)
+        .expect(200);
+      await request(app.getHttpServer())
+        .delete(`/api/v1/users/${missingId}`)
+        .set('Authorization', `Bearer ${professorToken}`)
+        .expect(404);
+      await request(app.getHttpServer())
+        .patch(`/api/v1/bookings/${missingId}`)
+        .set('Authorization', `Bearer ${professorToken}`)
+        .send({ notes: 'permitido' })
+        .expect(404);
+      await request(app.getHttpServer())
+        .post(`/api/v1/bookings/${missingId}/approve`)
+        .set('Authorization', `Bearer ${professorToken}`)
+        .send({})
+        .expect(404);
+      await request(app.getHttpServer())
+        .post('/api/v1/courses')
+        .set('Authorization', `Bearer ${professorToken}`)
+        .send({})
+        .expect(400);
+      await request(app.getHttpServer())
+        .patch(`/api/v1/courses/lessons/${missingId}/attendance`)
+        .set('Authorization', `Bearer ${professorToken}`)
+        .send({ studentId: missingId, present: true })
+        .expect(404);
+      await request(app.getHttpServer())
+        .post('/api/v1/materials')
+        .set('Authorization', `Bearer ${professorToken}`)
+        .send({})
+        .expect(400);
+
+      await request(app.getHttpServer())
+        .patch(`/api/v1/users/${professorId}/permissions`)
+        .set('Authorization', `Bearer ${adminToken}`)
+        .send({ permissions: [] })
+        .expect(200);
+      await expectDenied();
+    } finally {
+      await request(app.getHttpServer())
+        .patch(`/api/v1/users/${professorId}/permissions`)
+        .set('Authorization', `Bearer ${adminToken}`)
+        .send({ permissions: allPermissions })
+        .expect(200);
+    }
   });
 
   it('executa o ciclo administrativo completo de um aluno', async () => {
@@ -409,13 +678,68 @@ describe('DJ ON API (e2e)', () => {
       .expect(200);
   });
 
+  it('cria, conta, lê e remove notificações do destinatário correto', async () => {
+    const student = await connection
+      .collection('users')
+      .findOne({ email: 'aluno1@teste.com' });
+    const created = await request(app.getHttpServer())
+      .post('/api/v1/notifications')
+      .set('Authorization', `Bearer ${tokens[Role.Admin]}`)
+      .send({
+        recipientIds: [String(student?._id)],
+        type: 'e2e.manual',
+        title: 'Notificação E2E',
+        body: 'Validação completa da central.',
+        url: '/dashboard/notificacoes',
+        metadata: { source: 'e2e' },
+      })
+      .expect(201);
+    const notificationId = String(created.body[0].id);
+
+    await request(app.getHttpServer())
+      .get('/api/v1/notifications/unread-count')
+      .set('Authorization', `Bearer ${tokens[Role.Student]}`)
+      .expect(200)
+      .expect(({ body }) => expect(body.count).toBeGreaterThan(0));
+    await request(app.getHttpServer())
+      .patch(`/api/v1/notifications/${notificationId}/read`)
+      .set('Authorization', `Bearer ${secondStudentToken}`)
+      .expect(404);
+    await request(app.getHttpServer())
+      .patch(`/api/v1/notifications/${notificationId}/read`)
+      .set('Authorization', `Bearer ${tokens[Role.Student]}`)
+      .expect(200)
+      .expect(({ body }) => expect(body.readAt).toBeTruthy());
+
+    const second = await request(app.getHttpServer())
+      .post('/api/v1/notifications')
+      .set('Authorization', `Bearer ${tokens[Role.Admin]}`)
+      .send({
+        recipientIds: [String(student?._id)],
+        type: 'e2e.read-all',
+        title: 'Segunda notificação E2E',
+        body: 'Validação do marcar todas como lidas.',
+      })
+      .expect(201);
+    await request(app.getHttpServer())
+      .patch('/api/v1/notifications/read-all')
+      .set('Authorization', `Bearer ${tokens[Role.Student]}`)
+      .expect(200)
+      .expect(({ body }) => expect(body.updated).toBeGreaterThan(0));
+    await request(app.getHttpServer())
+      .delete(`/api/v1/notifications/${String(second.body[0].id)}`)
+      .set('Authorization', `Bearer ${tokens[Role.Student]}`)
+      .expect(200)
+      .expect(({ body }) => expect(body.removed).toBe(true));
+  });
+
   it('cria treino pendente, impede conflito e permite aprovação', async () => {
     const forbiddenLesson = await request(app.getHttpServer())
       .post('/api/v1/bookings')
       .set('Authorization', `Bearer ${tokens[Role.Student]}`)
       .send({
         title: 'Aula solicitada pelo aluno',
-        date: '2030-08-20',
+        date: trainingDate,
         time: '18:00',
         type: BookingType.Lesson,
         unitId,
@@ -436,7 +760,7 @@ describe('DJ ON API (e2e)', () => {
       .set('Authorization', `Bearer ${tokens[Role.Student]}`)
       .send({
         title: 'Treino sem equipamento',
-        date: '2030-08-20',
+        date: trainingDate,
         time: '18:00',
         type: BookingType.Training,
         unitId,
@@ -451,7 +775,7 @@ describe('DJ ON API (e2e)', () => {
       .set('Authorization', `Bearer ${tokens[Role.Student]}`)
       .send({
         title: 'Treino de Beat Match',
-        date: '2030-08-20',
+        date: trainingDate,
         time: '19:00',
         type: BookingType.Training,
         unitId,
@@ -468,7 +792,7 @@ describe('DJ ON API (e2e)', () => {
 
     await request(app.getHttpServer())
       .get(
-        `/api/v1/bookings/availability?date=2030-08-20&unitId=${unitId}&type=treino&equipmentId=${equipmentId}`,
+        `/api/v1/bookings/availability?date=${trainingDate}&unitId=${unitId}&type=treino&equipmentId=${equipmentId}`,
       )
       .set('Authorization', `Bearer ${tokens[Role.Student]}`)
       .expect(200)
@@ -489,7 +813,7 @@ describe('DJ ON API (e2e)', () => {
       .set('Authorization', `Bearer ${secondStudentToken}`)
       .send({
         title: 'Mesmo horário',
-        date: '2030-08-20',
+        date: trainingDate,
         time: '19:00',
         type: BookingType.Training,
         unitId,
@@ -515,6 +839,58 @@ describe('DJ ON API (e2e)', () => {
           ),
         ).toBe(true),
       );
+  });
+
+  it('consulta disponibilidade mensal, recusa e cancela solicitações', async () => {
+    await request(app.getHttpServer())
+      .get(
+        `/api/v1/bookings/availability/month?month=${trainingDate.slice(0, 7)}&unitId=${unitId}&type=treino&equipmentId=${equipmentId}&durationMinutes=30`,
+      )
+      .set('Authorization', `Bearer ${tokens[Role.Student]}`)
+      .expect(200)
+      .expect(({ body }) => {
+        expect(Array.isArray(body.availableDates)).toBe(true);
+      });
+
+    const rejected = await request(app.getHttpServer())
+      .post('/api/v1/bookings')
+      .set('Authorization', `Bearer ${secondStudentToken}`)
+      .send({
+        title: 'Treino para recusar',
+        date: trainingDate,
+        time: '08:00',
+        durationMinutes: 30,
+        type: BookingType.Training,
+        unitId,
+        equipmentId,
+      })
+      .expect(201);
+    await request(app.getHttpServer())
+      .post(`/api/v1/bookings/${String(rejected.body.id)}/reject`)
+      .set('Authorization', `Bearer ${tokens[Role.Professor]}`)
+      .send({ reason: 'Horário reservado para manutenção.' })
+      .expect(201)
+      .expect(({ body }) => expect(body.status).toBe('cancelado'));
+
+    const cancelled = await request(app.getHttpServer())
+      .post('/api/v1/bookings')
+      .set('Authorization', `Bearer ${secondStudentToken}`)
+      .send({
+        title: 'Treino para cancelar',
+        date: trainingDate,
+        time: '09:00',
+        durationMinutes: 30,
+        type: BookingType.Training,
+        unitId,
+        equipmentId,
+      })
+      .expect(201);
+    await request(app.getHttpServer())
+      .post(`/api/v1/bookings/${String(cancelled.body.id)}/cancel`)
+      .set('Authorization', `Bearer ${secondStudentToken}`)
+      .send({ reason: 'Mudança de planos.' })
+      .expect(201)
+      .expect(({ body }) => expect(body.status).toBe('cancelado'));
   });
 
   it('restringe a remoção e exclui o agendamento para a administração', async () => {
@@ -577,7 +953,7 @@ describe('DJ ON API (e2e)', () => {
             .findOne({ email: 'aluno1@teste.com' })
         )?._id,
         title: 'Treino original',
-        date: '2030-08-21',
+        date: originalTrainingDate,
         time: '18:00',
         type: BookingType.Training,
         unitId,
@@ -590,7 +966,7 @@ describe('DJ ON API (e2e)', () => {
       .set('Authorization', `Bearer ${tokens[Role.Student]}`)
       .send({
         title: 'Treino remarcado',
-        date: '2030-08-22',
+        date: rescheduledTrainingDate,
         time: '18:00',
         type: BookingType.Training,
         unitId,
@@ -613,6 +989,388 @@ describe('DJ ON API (e2e)', () => {
       .set('Authorization', `Bearer ${tokens[Role.Professor]}`)
       .expect(200)
       .expect(({ body }) => expect(body.status).toBe('cancelado'));
+  });
+
+  it('executa cursos, turma atômica, conflitos, agenda e liberação de material', async () => {
+    const adminToken = tokens[Role.Admin];
+    const professorToken = tokens[Role.Professor];
+    const studentToken = tokens[Role.Student];
+    const student = await connection
+      .collection('users')
+      .findOne({ email: 'aluno1@teste.com' });
+    expect(student?._id).toBeDefined();
+
+    const createdCourse = await request(app.getHttpServer())
+      .post('/api/v1/courses')
+      .set('Authorization', `Bearer ${adminToken}`)
+      .send({
+        name: 'Formação E2E',
+        description: 'Curso completo para validar o fluxo acadêmico.',
+        coverImage: 'https://images.example.test/formacao-e2e.jpg',
+      })
+      .expect(201);
+    const courseId = String(createdCourse.body.id);
+
+    await request(app.getHttpServer())
+      .patch(`/api/v1/courses/${courseId}`)
+      .set('Authorization', `Bearer ${adminToken}`)
+      .send({ description: 'Descrição atualizada no fluxo E2E.' })
+      .expect(200)
+      .expect(({ body }) =>
+        expect(body.description).toBe('Descrição atualizada no fluxo E2E.'),
+      );
+
+    const categories = await request(app.getHttpServer())
+      .get('/api/v1/materials/categories')
+      .set('Authorization', `Bearer ${adminToken}`)
+      .expect(200);
+    const coursesCategory = categories.body.find(
+      (item: { systemKey?: string }) => item.systemKey === 'courses',
+    );
+    expect(coursesCategory).toMatchObject({
+      name: 'Cursos',
+      type: 'curso',
+      active: true,
+    });
+
+    await request(app.getHttpServer())
+      .patch(`/api/v1/materials/categories/${String(coursesCategory.id)}`)
+      .set('Authorization', `Bearer ${adminToken}`)
+      .send({ name: 'Cursos editados' })
+      .expect(400);
+    await request(app.getHttpServer())
+      .delete(`/api/v1/materials/categories/${String(coursesCategory.id)}`)
+      .set('Authorization', `Bearer ${adminToken}`)
+      .expect(400);
+
+    const lessonMaterialIds: string[] = [];
+    for (const index of [1, 2]) {
+      const material = await request(app.getHttpServer())
+        .post('/api/v1/materials')
+        .set('Authorization', `Bearer ${adminToken}`)
+        .send({
+          title: `Aula E2E ${index}`,
+          description: `Conteúdo da aula ${index}.`,
+          body: `<p>Material completo da aula ${index}.</p>`,
+          courseId,
+          status: 'published',
+        })
+        .expect(201);
+      lessonMaterialIds.push(String(material.body.id));
+      expect(material.body.categoryId.id).toBe(String(coursesCategory.id));
+    }
+
+    await request(app.getHttpServer())
+      .get(`/api/v1/materials?courseId=${courseId}`)
+      .set('Authorization', `Bearer ${studentToken}`)
+      .expect(200)
+      .expect(({ body }) => {
+        expect(body.items).toHaveLength(2);
+        expect(
+          body.items.every((item: { locked: boolean }) => item.locked),
+        ).toBe(true);
+      });
+
+    const conflictDate = futureDate(20);
+    await request(app.getHttpServer())
+      .post('/api/v1/bookings')
+      .set('Authorization', `Bearer ${adminToken}`)
+      .send({
+        studentId: String(student?._id),
+        title: 'Reserva que conflita com a turma',
+        date: conflictDate,
+        time: '10:00',
+        durationMinutes: 60,
+        type: BookingType.Training,
+        unitId,
+        equipmentId,
+      })
+      .expect(201);
+
+    const cohortsBeforeConflict = await connection
+      .collection('cohorts')
+      .countDocuments();
+    const classBookingsBeforeConflict = await connection
+      .collection('bookings')
+      .countDocuments({ isClassLesson: true });
+    await request(app.getHttpServer())
+      .post('/api/v1/courses/cohorts/complete')
+      .set('Authorization', `Bearer ${adminToken}`)
+      .send({
+        name: 'Turma com conflito E2E',
+        courseId,
+        unitId,
+        professorId,
+        equipmentId,
+        studentIds: [String(student?._id)],
+        lessonCount: 2,
+        durationMinutes: 60,
+        lessons: [
+          {
+            materialId: lessonMaterialIds[0],
+            date: conflictDate,
+            time: '10:00',
+          },
+          {
+            materialId: lessonMaterialIds[1],
+            date: futureDate(21),
+            time: '10:00',
+          },
+        ],
+      })
+      .expect(409)
+      .expect(({ body }) => {
+        expect(body.code).toBe('COHORT_SCHEDULE_CONFLICT');
+        expect(body.conflicts).toEqual(
+          expect.arrayContaining([
+            expect.objectContaining({
+              lessonIndex: 0,
+              kind: 'equipment',
+              conflictingTitle: 'Reserva que conflita com a turma',
+            }),
+          ]),
+        );
+      });
+    expect(await connection.collection('cohorts').countDocuments()).toBe(
+      cohortsBeforeConflict,
+    );
+    expect(
+      await connection
+        .collection('bookings')
+        .countDocuments({ isClassLesson: true }),
+    ).toBe(classBookingsBeforeConflict);
+
+    const createdCohort = await request(app.getHttpServer())
+      .post('/api/v1/courses/cohorts/complete')
+      .set('Authorization', `Bearer ${adminToken}`)
+      .send({
+        name: 'Turma completa E2E',
+        courseId,
+        unitId,
+        professorId,
+        equipmentId,
+        studentIds: [String(student?._id)],
+        lessonCount: 2,
+        durationMinutes: 60,
+        lessons: [
+          {
+            materialId: lessonMaterialIds[0],
+            date: futureDate(22),
+            time: '10:00',
+          },
+          {
+            materialId: lessonMaterialIds[1],
+            date: futureDate(23),
+            time: '10:00',
+          },
+        ],
+      });
+    if (createdCohort.status !== 201) {
+      throw new Error(
+        `Criação da turma falhou: ${createdCohort.status} ${JSON.stringify(createdCohort.body)}`,
+      );
+    }
+    const cohortId = String(createdCohort.body.id);
+    expect(createdCohort.body).toMatchObject({
+      name: 'Turma completa E2E',
+      status: 'ativa',
+      lessonCount: 2,
+      durationMinutes: 60,
+    });
+    expect(createdCohort.body.professorId.id).toBe(professorId);
+    expect(createdCohort.body.lessons).toHaveLength(2);
+    expect(
+      await connection
+        .collection('bookings')
+        .countDocuments({ isClassLesson: true }),
+    ).toBe(classBookingsBeforeConflict + 2);
+    await request(app.getHttpServer())
+      .get('/api/v1/bookings?limit=100')
+      .set('Authorization', `Bearer ${professorToken}`)
+      .expect(200)
+      .expect(({ body }) => {
+        const classBooking = body.items.find(
+          (item: { cohortId?: { id?: string } | string }) =>
+            (typeof item.cohortId === 'string'
+              ? item.cohortId
+              : item.cohortId?.id) === cohortId,
+        );
+        expect(classBooking).toMatchObject({
+          isClassLesson: true,
+          cohortName: 'Turma completa E2E',
+        });
+        expect(String(classBooking.lessonId)).toBeTruthy();
+      });
+
+    await request(app.getHttpServer())
+      .get(`/api/v1/courses/cohorts/${cohortId}`)
+      .set('Authorization', `Bearer ${secondStudentToken}`)
+      .expect(403);
+    const studentCohort = await request(app.getHttpServer())
+      .get(`/api/v1/courses/cohorts/${cohortId}`)
+      .set('Authorization', `Bearer ${studentToken}`)
+      .expect(200);
+    expect(
+      studentCohort.body.lessons.every(
+        (lesson: { locked: boolean }) => lesson.locked,
+      ),
+    ).toBe(true);
+
+    await request(app.getHttpServer())
+      .get(`/api/v1/materials/${lessonMaterialIds[0]}`)
+      .set('Authorization', `Bearer ${studentToken}`)
+      .expect(403);
+
+    const firstLessonId = String(createdCohort.body.lessons[0].id);
+    await request(app.getHttpServer())
+      .patch(`/api/v1/users/${professorId}/permissions`)
+      .set('Authorization', `Bearer ${adminToken}`)
+      .send({ permissions: [] })
+      .expect(200);
+    const attendanceUpdate = await request(app.getHttpServer())
+      .patch(`/api/v1/courses/lessons/${firstLessonId}/attendance`)
+      .set('Authorization', `Bearer ${professorToken}`)
+      .send({ studentId: String(student?._id), present: true })
+      .expect(200);
+    const firstAttendance = attendanceUpdate.body.lessons[0].attendance.find(
+      (item: { studentId: { id: string } }) =>
+        item.studentId.id === String(student?._id),
+    );
+    expect(firstAttendance).toMatchObject({
+      present: true,
+      materialReleased: true,
+    });
+
+    const otherProfessor = await app.get(UsersService).create({
+      name: 'Professor Visitante',
+      email: 'professor-visitante@teste.com',
+      password,
+      role: Role.Professor,
+      unitId,
+    });
+    const otherProfessorToken = (
+      await request(app.getHttpServer())
+        .post('/api/v1/auth/login')
+        .set('X-Forwarded-For', `127.0.0.${loginIpOctet++}`)
+        .send({ email: 'professor-visitante@teste.com', password })
+        .expect(201)
+    ).body.accessToken as string;
+    const otherCohort = await request(app.getHttpServer())
+      .post('/api/v1/courses/cohorts/complete')
+      .set('Authorization', `Bearer ${otherProfessorToken}`)
+      .send({
+        name: 'Turma do professor visitante',
+        courseId,
+        unitId,
+        professorId: String(otherProfessor.id),
+        equipmentId,
+        studentIds: [String(student?._id)],
+        lessonCount: 2,
+        durationMinutes: 60,
+        lessons: [
+          {
+            materialId: lessonMaterialIds[0],
+            date: futureDate(26),
+            time: '10:00',
+          },
+          {
+            materialId: lessonMaterialIds[1],
+            date: futureDate(27),
+            time: '10:00',
+          },
+        ],
+      })
+      .expect(201);
+    const otherCohortId = String(otherCohort.body.id);
+    const otherLessonId = String(otherCohort.body.lessons[0].id);
+
+    await request(app.getHttpServer())
+      .get('/api/v1/courses/cohorts')
+      .set('Authorization', `Bearer ${professorToken}`)
+      .expect(200)
+      .expect(({ body }) => {
+        const ids = body.map((item: { id: string }) => String(item.id));
+        expect(ids).toEqual(expect.arrayContaining([cohortId, otherCohortId]));
+      });
+    await request(app.getHttpServer())
+      .get(`/api/v1/courses/cohorts/${otherCohortId}`)
+      .set('Authorization', `Bearer ${professorToken}`)
+      .expect(200);
+    await request(app.getHttpServer())
+      .patch(`/api/v1/courses/lessons/${otherLessonId}/attendance`)
+      .set('Authorization', `Bearer ${professorToken}`)
+      .send({ studentId: String(student?._id), present: true })
+      .expect(403);
+    await request(app.getHttpServer())
+      .patch(`/api/v1/courses/lessons/${otherLessonId}/attendance`)
+      .set('Authorization', `Bearer ${adminToken}`)
+      .send({ studentId: String(student?._id), present: true })
+      .expect(200);
+    await request(app.getHttpServer())
+      .patch(`/api/v1/users/${professorId}/permissions`)
+      .set('Authorization', `Bearer ${adminToken}`)
+      .send({ permissions: Object.values(Permission) })
+      .expect(200);
+
+    await request(app.getHttpServer())
+      .get(`/api/v1/materials/${lessonMaterialIds[0]}`)
+      .set('Authorization', `Bearer ${studentToken}`)
+      .expect(200);
+    await request(app.getHttpServer())
+      .get(`/api/v1/materials/${lessonMaterialIds[1]}`)
+      .set('Authorization', `Bearer ${studentToken}`)
+      .expect(403);
+
+    await request(app.getHttpServer())
+      .get('/api/v1/courses')
+      .set('Authorization', `Bearer ${studentToken}`)
+      .expect(200)
+      .expect(({ body }) =>
+        expect(body.map((item: { id: string }) => item.id)).toContain(courseId),
+      );
+
+    const setupCohort = await request(app.getHttpServer())
+      .post('/api/v1/courses/cohorts')
+      .set('Authorization', `Bearer ${adminToken}`)
+      .send({
+        name: 'Turma configurada depois E2E',
+        courseId,
+        unitId,
+        professorId,
+        equipmentId,
+        studentIds: [String(student?._id)],
+        lessonCount: 2,
+        durationMinutes: 60,
+      })
+      .expect(201);
+    expect(setupCohort.body.status).toBe('configuracao');
+    await request(app.getHttpServer())
+      .post(`/api/v1/courses/cohorts/${String(setupCohort.body.id)}/lessons`)
+      .set('Authorization', `Bearer ${adminToken}`)
+      .send({
+        lessons: [
+          {
+            materialId: lessonMaterialIds[0],
+            date: futureDate(24),
+            time: '10:00',
+          },
+          {
+            materialId: lessonMaterialIds[1],
+            date: futureDate(25),
+            time: '10:00',
+          },
+        ],
+      })
+      .expect(201)
+      .expect(({ body }) => {
+        expect(body.status).toBe('ativa');
+        expect(body.lessons).toHaveLength(2);
+      });
+
+    await request(app.getHttpServer())
+      .delete(`/api/v1/courses/${courseId}`)
+      .set('Authorization', `Bearer ${adminToken}`)
+      .expect(409);
   });
 
   it('mantém unidades inativas fora da rota pública', async () => {
@@ -750,6 +1508,35 @@ describe('DJ ON API (e2e)', () => {
       .send({ title: 'Primeiro Gig Atualizado' })
       .expect(200)
       .expect(({ body }) => expect(body.title).toContain('Atualizado'));
+    await request(app.getHttpServer())
+      .get(`/api/v1/events/${eventId}`)
+      .set('Authorization', `Bearer ${tokens[Role.Student]}`)
+      .expect(200)
+      .expect(({ body }) => expect(body.id).toBe(eventId));
+    await request(app.getHttpServer())
+      .get('/api/v1/events?type=student')
+      .set('Authorization', `Bearer ${tokens[Role.Student]}`)
+      .expect(200)
+      .expect(({ body }) =>
+        expect(body.items.map((item: { id: string }) => item.id)).toContain(
+          eventId,
+        ),
+      );
+    const removable = await request(app.getHttpServer())
+      .post('/api/v1/events')
+      .set('Authorization', `Bearer ${tokens[Role.Student]}`)
+      .send({
+        title: 'Evento removível E2E',
+        date: '2030-09-02',
+        time: '22:00',
+        location: 'Clube Teste',
+      })
+      .expect(201);
+    await request(app.getHttpServer())
+      .delete(`/api/v1/events/${String(removable.body.id)}`)
+      .set('Authorization', `Bearer ${tokens[Role.Student]}`)
+      .expect(200)
+      .expect(({ body }) => expect(body.id).toBe(String(removable.body.id)));
   });
 
   it('publica material sanitizado e gerencia categoria', async () => {

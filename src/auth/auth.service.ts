@@ -30,6 +30,9 @@ export class AuthService {
         email: user.email,
         role: user.role,
         avatar: user.avatar,
+        unitId: user.unitId,
+        passwordChangeRequired: user.passwordChangeRequired,
+        permissions: user.permissions ?? [],
       },
     };
   }

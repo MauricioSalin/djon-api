@@ -1,9 +1,24 @@
 import { Prop, Schema, SchemaFactory } from '@nestjs/mongoose';
 import { HydratedDocument, Types } from 'mongoose';
 import { Role } from '../../common/enums/role.enum';
+import { Permission } from '../../common/enums/permission.enum';
 import { Unit } from '../../units/schemas/unit.schema';
 
 export type UserDocument = HydratedDocument<User>;
+
+@Schema({ _id: false })
+export class LatestRelease {
+  @Prop({ trim: true, maxlength: 150 })
+  title?: string;
+
+  @Prop({ trim: true })
+  link?: string;
+
+  @Prop({ trim: true })
+  cover?: string;
+}
+
+const LatestReleaseSchema = SchemaFactory.createForClass(LatestRelease);
 
 @Schema({ _id: false })
 export class SocialLinks {
@@ -15,6 +30,12 @@ export class SocialLinks {
 
   @Prop({ trim: true })
   youtube?: string;
+
+  @Prop({ trim: true })
+  spotify?: string;
+
+  @Prop({ trim: true })
+  pressKit?: string;
 }
 
 const SocialLinksSchema = SchemaFactory.createForClass(SocialLinks);
@@ -37,6 +58,9 @@ export class User {
 
   @Prop({ required: true, trim: true })
   name!: string;
+
+  @Prop({ trim: true, maxlength: 150, index: true })
+  projectName?: string;
 
   @Prop({
     required: true,
@@ -71,14 +95,26 @@ export class User {
   @Prop({ type: SocialLinksSchema, default: {} })
   socials!: SocialLinks;
 
+  @Prop({ type: LatestReleaseSchema, default: {} })
+  latestRelease!: LatestRelease;
+
   @Prop({ type: String, required: true, enum: Role, index: true })
   role!: Role;
 
   @Prop({ type: Types.ObjectId, ref: Unit.name, index: true })
   unitId?: Types.ObjectId;
 
-  @Prop({ min: 0, max: 1000, default: 8, select: false })
+  @Prop({ min: 0, max: 1000, default: 15, select: false })
   trainingHoursLimit!: number;
+
+  @Prop({ type: [String], enum: Permission, default: [], select: false })
+  permissions!: Permission[];
+
+  @Prop({ default: true })
+  showAcademicProgress!: boolean;
+
+  @Prop({ default: false })
+  passwordChangeRequired!: boolean;
 
   @Prop({ default: true, index: true })
   active!: boolean;
@@ -91,4 +127,4 @@ export class User {
 }
 
 export const UserSchema = SchemaFactory.createForClass(User);
-UserSchema.index({ name: 'text', email: 'text' });
+UserSchema.index({ name: 'text', projectName: 'text', email: 'text' });

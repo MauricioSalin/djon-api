@@ -18,6 +18,15 @@ export class Equipment {
   @Prop({ default: true, index: true })
   active!: boolean;
 
+  @Prop({ type: [Number], default: [] })
+  unavailableWeekdays!: number[];
+
+  @Prop({ type: String, default: null })
+  unavailableFrom!: string | null;
+
+  @Prop({ type: String, default: null })
+  unavailableUntil!: string | null;
+
   createdAt!: Date;
   updatedAt!: Date;
 }

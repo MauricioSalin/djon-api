@@ -30,6 +30,7 @@ export class EquipmentsService {
 
   async create(dto: CreateEquipmentDto) {
     await this.ensureActiveUnit(dto.unitId);
+    this.validateUnavailablePeriod(dto);
     try {
       const equipment = await this.equipmentModel.create({
         ...dto,
@@ -47,6 +48,20 @@ export class EquipmentsService {
   async update(id: string, dto: UpdateEquipmentDto) {
     this.ensureObjectId(id);
     if (dto.unitId) await this.ensureActiveUnit(dto.unitId);
+    const current = await this.equipmentModel.findById(id).lean().exec();
+    if (!current) throw new NotFoundException('Equipamento não encontrado.');
+    this.validateUnavailablePeriod({
+      unavailableWeekdays:
+        dto.unavailableWeekdays ?? current.unavailableWeekdays,
+      unavailableFrom:
+        dto.unavailableFrom === undefined
+          ? current.unavailableFrom
+          : dto.unavailableFrom,
+      unavailableUntil:
+        dto.unavailableUntil === undefined
+          ? current.unavailableUntil
+          : dto.unavailableUntil,
+    });
     try {
       const equipment = await this.equipmentModel.findByIdAndUpdate(
         id,
@@ -105,6 +120,34 @@ export class EquipmentsService {
   private ensureObjectId(id: string) {
     if (!Types.ObjectId.isValid(id)) {
       throw new NotFoundException('Equipamento não encontrado.');
+    }
+  }
+
+  private validateUnavailablePeriod(data: {
+    unavailableWeekdays?: number[];
+    unavailableFrom?: string | null;
+    unavailableUntil?: string | null;
+  }) {
+    const hasFrom = Boolean(data.unavailableFrom);
+    const hasUntil = Boolean(data.unavailableUntil);
+    if (hasFrom !== hasUntil) {
+      throw new BadRequestException(
+        'Informe o início e o fim do período de indisponibilidade.',
+      );
+    }
+    if (
+      hasFrom &&
+      hasUntil &&
+      data.unavailableFrom! >= data.unavailableUntil!
+    ) {
+      throw new BadRequestException(
+        'O fim da indisponibilidade deve ser posterior ao início.',
+      );
+    }
+    if (hasFrom && (data.unavailableWeekdays?.length ?? 0) > 0) {
+      throw new BadRequestException(
+        'Escolha dias da semana ou um período com horário, não os dois.',
+      );
     }
   }
 

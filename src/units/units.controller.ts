@@ -9,8 +9,8 @@ import {
 } from '@nestjs/common';
 import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
 import { Public } from '../common/decorators/public.decorator';
-import { Roles } from '../common/decorators/roles.decorator';
-import { Role } from '../common/enums/role.enum';
+import { Permissions } from '../common/decorators/permissions.decorator';
+import { Permission } from '../common/enums/permission.enum';
 import { UpsertUnitDto } from './dto/upsert-unit.dto';
 import { UnitsService } from './units.service';
 
@@ -27,28 +27,28 @@ export class UnitsController {
 
   @ApiBearerAuth()
   @Get('admin/all')
-  @Roles(Role.Admin)
+  @Permissions(Permission.UnitsManage)
   findAllForAdmin() {
     return this.unitsService.findAll(false);
   }
 
   @ApiBearerAuth()
   @Post()
-  @Roles(Role.Admin)
+  @Permissions(Permission.UnitsManage)
   create(@Body() dto: UpsertUnitDto) {
     return this.unitsService.create(dto);
   }
 
   @ApiBearerAuth()
   @Patch(':id')
-  @Roles(Role.Admin)
+  @Permissions(Permission.UnitsManage)
   update(@Param('id') id: string, @Body() dto: UpsertUnitDto) {
     return this.unitsService.update(id, dto);
   }
 
   @ApiBearerAuth()
   @Delete(':id')
-  @Roles(Role.Admin)
+  @Permissions(Permission.UnitsManage)
   deactivate(@Param('id') id: string) {
     return this.unitsService.deactivate(id);
   }

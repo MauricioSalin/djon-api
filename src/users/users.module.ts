@@ -2,6 +2,7 @@ import { Module } from '@nestjs/common';
 import { MongooseModule } from '@nestjs/mongoose';
 import { FilesModule } from '../files/files.module';
 import { UnitsModule } from '../units/units.module';
+import { MailModule } from '../mail/mail.module';
 import { User, UserSchema } from './schemas/user.schema';
 import { UsersController } from './users.controller';
 import { UsersService } from './users.service';
@@ -11,6 +12,7 @@ import { UsersService } from './users.service';
     MongooseModule.forFeature([{ name: User.name, schema: UserSchema }]),
     FilesModule,
     UnitsModule,
+    MailModule,
   ],
   controllers: [UsersController],
   providers: [UsersService],

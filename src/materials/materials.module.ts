@@ -10,12 +10,16 @@ import {
   MaterialCategorySchema,
 } from './schemas/material-category.schema';
 import { Material, MaterialSchema } from './schemas/material.schema';
+import { Course, CourseSchema } from '../courses/schemas/course.schema';
+import { Lesson, LessonSchema } from '../courses/schemas/lesson.schema';
 
 @Module({
   imports: [
     MongooseModule.forFeature([
       { name: Material.name, schema: MaterialSchema },
       { name: MaterialCategory.name, schema: MaterialCategorySchema },
+      { name: Course.name, schema: CourseSchema },
+      { name: Lesson.name, schema: LessonSchema },
     ]),
     UsersModule,
     NotificationsModule,

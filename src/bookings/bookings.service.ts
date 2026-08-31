@@ -7,8 +7,10 @@ import {
 } from '@nestjs/common';
 import { InjectModel } from '@nestjs/mongoose';
 import { Model, Types } from 'mongoose';
+import { Permission } from '../common/enums/permission.enum';
 import { Role } from '../common/enums/role.enum';
 import { AuthUser } from '../common/interfaces/auth-user.interface';
+import { actorHasPermission } from '../common/permissions';
 import { EquipmentsService } from '../equipments/equipments.service';
 import { NotificationsService } from '../notifications/notifications.service';
 import { UnitsService } from '../units/units.service';
@@ -25,22 +27,48 @@ import {
 
 const OPENING_MINUTES = 8 * 60;
 const CLOSING_MINUTES = 22 * 60;
-const SLOT_MINUTES = 60;
+const SLOT_MINUTES = 30;
 const DEFAULT_DURATION_MINUTES = 60;
 
 type ResourceSelection = {
   professorId?: string;
   equipmentId: string;
   resourceKey: string;
+  equipmentUnavailableWeekdays: number[];
+  equipmentUnavailableFrom: string | null;
+  equipmentUnavailableUntil: string | null;
 };
 
 type AvailabilityBooking = {
   _id: unknown;
+  title?: string;
   date: string;
   time: string;
   durationMinutes?: number;
   professorId?: unknown;
   equipmentId?: unknown;
+};
+
+export type ClassLessonScheduleConflict = {
+  lessonIndex: number;
+  date: string;
+  time: string;
+  endTime: string;
+  kind:
+    | 'equipment'
+    | 'professor'
+    | 'equipment-weekday'
+    | 'equipment-period'
+    | 'cohort-lesson';
+  message: string;
+  conflictingBookingId?: string;
+  conflictingTitle?: string;
+  conflictingLessonIndex?: number;
+};
+
+export type ClassLessonScheduleInput = {
+  date: string;
+  time: string;
 };
 
 @Injectable()
@@ -58,7 +86,17 @@ export class BookingsService {
     dto: CreateBookingDto,
     actor: AuthUser,
     trainingLimitCreditMinutes = 0,
+    courseWorkflow = false,
   ) {
+    if (
+      actor.role !== Role.Student &&
+      !courseWorkflow &&
+      !actorHasPermission(actor, Permission.BookingsManage)
+    ) {
+      throw new ForbiddenException(
+        'Você não tem permissão para gerenciar a agenda.',
+      );
+    }
     const studentId = actor.role === Role.Student ? actor.id : dto.studentId;
     if (!studentId) throw new BadRequestException('Aluno é obrigatório.');
     if (
@@ -75,6 +113,8 @@ export class BookingsService {
     }
 
     const unitId = await this.resolveUnitId(dto.unitId);
+    this.assertActorUnit(actor, unitId);
+    const unit = await this.unitsService.findActiveById(unitId);
     const status =
       actor.role === Role.Student
         ? BookingStatus.Pending
@@ -88,8 +128,9 @@ export class BookingsService {
       unitId,
     );
 
-    this.validateSchedule(dto.date, dto.time, durationMinutes);
+    this.validateSchedule(dto.date, dto.time, durationMinutes, unit?.timezone);
     if (actor.role === Role.Student) {
+      this.assertStudentBookingHorizon(dto.date, unit?.timezone);
       await this.assertTrainingLimit(
         studentId,
         durationMinutes,
@@ -146,14 +187,27 @@ export class BookingsService {
   async findAll(query: QueryBookingsDto, actor: AuthUser) {
     const filter: Record<string, unknown> = {};
     if (actor.role === Role.Student) {
-      filter.studentId = new Types.ObjectId(actor.id);
+      filter.$or = [
+        { studentId: new Types.ObjectId(actor.id) },
+        { studentIds: new Types.ObjectId(actor.id) },
+      ];
     } else if (query.studentId) {
-      filter.studentId = new Types.ObjectId(query.studentId);
+      filter.$or = [
+        { studentId: new Types.ObjectId(query.studentId) },
+        { studentIds: new Types.ObjectId(query.studentId) },
+      ];
+    }
+    if (actor.role === Role.Professor) {
+      if (!actor.unitId) {
+        throw new ForbiddenException('Professor sem unidade vinculada.');
+      }
+      filter.unitId = new Types.ObjectId(actor.unitId);
     }
     if (query.professorId) {
       filter.professorId = new Types.ObjectId(query.professorId);
     }
-    if (query.unitId) filter.unitId = new Types.ObjectId(query.unitId);
+    if (query.unitId && actor.role !== Role.Professor)
+      filter.unitId = new Types.ObjectId(query.unitId);
     if (query.status) filter.status = query.status;
     if (query.type) filter.type = query.type;
     if (query.dateFrom || query.dateTo) {
@@ -168,6 +222,7 @@ export class BookingsService {
       this.bookingModel
         .find(filter)
         .populate('studentId', 'name email whatsapp avatar socials')
+        .populate('studentIds', 'name email whatsapp avatar socials')
         .populate('professorId', 'name email avatar unitId')
         .populate('equipmentId', 'name description unitId active')
         .populate('unitId', 'key label shortLabel timezone')
@@ -186,6 +241,7 @@ export class BookingsService {
     const booking = await this.bookingModel
       .findById(id)
       .populate('studentId', 'name email whatsapp avatar socials')
+      .populate('studentIds', 'name email whatsapp avatar socials')
       .populate('professorId', 'name email avatar unitId')
       .populate('equipmentId', 'name description unitId active')
       .populate('unitId', 'key label shortLabel timezone')
@@ -193,17 +249,193 @@ export class BookingsService {
       .exec();
     if (!booking) throw new NotFoundException('Agendamento não encontrado.');
     const ownerId = this.referenceId(booking.studentId);
-    if (actor.role === Role.Student && ownerId !== actor.id) {
+    const classStudentIds = (booking.studentIds ?? []).map((student) =>
+      this.referenceId(student),
+    );
+    if (
+      actor.role === Role.Student &&
+      ownerId !== actor.id &&
+      !classStudentIds.includes(actor.id)
+    ) {
       throw new ForbiddenException('Agendamento pertence a outro aluno.');
+    }
+    if (
+      actor.role === Role.Professor &&
+      this.referenceId(booking.unitId) !== actor.unitId
+    ) {
+      throw new ForbiddenException('Agendamento pertence a outra unidade.');
     }
     return booking;
   }
 
-  async remove(id: string) {
+  async remove(id: string, actor?: AuthUser) {
     this.ensureObjectId(id);
+    if (actor) {
+      const booking = await this.getDocument(id);
+      this.assertActorUnit(actor, String(booking.unitId));
+    }
     const deleted = await this.bookingModel.findByIdAndDelete(id).exec();
     if (!deleted) throw new NotFoundException('Agendamento não encontrado.');
     return { id };
+  }
+
+  async createClassLesson(
+    dto: CreateBookingDto,
+    studentIds: string[],
+    cohort: { id: string; name: string },
+    actor: AuthUser,
+  ) {
+    const booking = (await this.create(
+      { ...dto, studentId: studentIds[0] },
+      actor,
+      0,
+      true,
+    )) as { id?: string; _id?: unknown };
+    const bookingId = booking.id ?? String(booking._id);
+    await this.bookingModel.findByIdAndUpdate(bookingId, {
+      studentIds: studentIds.map((id) => new Types.ObjectId(id)),
+      isClassLesson: true,
+      cohortId: new Types.ObjectId(cohort.id),
+      cohortName: cohort.name.trim(),
+    });
+    return bookingId;
+  }
+
+  async linkClassLesson(bookingId: string, lessonId: string) {
+    await this.bookingModel.findByIdAndUpdate(bookingId, {
+      lessonId: new Types.ObjectId(lessonId),
+    });
+  }
+
+  async classLessonScheduleConflicts(
+    input: {
+      unitId: string;
+      professorId: string;
+      equipmentId: string;
+      durationMinutes: number;
+      lessons: ClassLessonScheduleInput[];
+    },
+    actor: AuthUser,
+  ): Promise<ClassLessonScheduleConflict[]> {
+    const unitId = await this.resolveUnitId(input.unitId);
+    this.assertActorUnit(actor, unitId);
+    const [unit, selection] = await Promise.all([
+      this.unitsService.findActiveById(unitId),
+      this.resolveResources(
+        BookingType.Lesson,
+        input.professorId,
+        input.equipmentId,
+        unitId,
+      ),
+    ]);
+
+    for (const lesson of input.lessons) {
+      this.validateSchedule(
+        lesson.date,
+        lesson.time,
+        input.durationMinutes,
+        unit?.timezone,
+      );
+    }
+    if (!input.lessons.length) return [];
+
+    const dates = input.lessons.map((lesson) => lesson.date).sort();
+    const bookings = await this.findAvailabilityBookings(
+      unitId,
+      dates[0],
+      dates[dates.length - 1],
+    );
+    const conflicts: ClassLessonScheduleConflict[] = [];
+
+    input.lessons.forEach((lesson, lessonIndex) => {
+      const endTime = this.minutesToTime(
+        this.timeToMinutes(lesson.time) + input.durationMinutes,
+      );
+      const base = {
+        lessonIndex,
+        date: lesson.date,
+        time: lesson.time,
+        endTime,
+      };
+
+      if (
+        selection.equipmentUnavailableWeekdays.includes(
+          this.weekdayOf(lesson.date),
+        )
+      ) {
+        conflicts.push({
+          ...base,
+          kind: 'equipment-weekday',
+          message: 'O equipamento está desativado para este dia da semana.',
+        });
+      }
+      if (
+        this.overlapsEquipmentUnavailablePeriod(
+          lesson.date,
+          lesson.time,
+          input.durationMinutes,
+          selection,
+        )
+      ) {
+        conflicts.push({
+          ...base,
+          kind: 'equipment-period',
+          message: 'O equipamento está bloqueado neste período.',
+        });
+      }
+
+      for (const booking of bookings) {
+        if (
+          booking.date !== lesson.date ||
+          !this.overlaps(lesson.time, input.durationMinutes, booking)
+        ) {
+          continue;
+        }
+        const sameEquipment =
+          this.referenceId(booking.equipmentId) === selection.equipmentId;
+        const sameProfessor = Boolean(
+          selection.professorId &&
+          this.referenceId(booking.professorId) === selection.professorId,
+        );
+        if (!sameEquipment && !sameProfessor) continue;
+
+        conflicts.push({
+          ...base,
+          kind: sameEquipment ? 'equipment' : 'professor',
+          message: sameEquipment
+            ? 'O equipamento já possui um agendamento neste horário.'
+            : 'O professor já possui um agendamento neste horário.',
+          conflictingBookingId: this.referenceId(booking._id),
+          conflictingTitle: booking.title,
+        });
+      }
+
+      for (
+        let previousIndex = 0;
+        previousIndex < lessonIndex;
+        previousIndex += 1
+      ) {
+        const previous = input.lessons[previousIndex];
+        if (
+          previous.date === lesson.date &&
+          this.overlaps(lesson.time, input.durationMinutes, {
+            _id: '',
+            date: previous.date,
+            time: previous.time,
+            durationMinutes: input.durationMinutes,
+          })
+        ) {
+          conflicts.push({
+            ...base,
+            kind: 'cohort-lesson',
+            message: `O horário se sobrepõe à aula ${previousIndex + 1} desta turma.`,
+            conflictingLessonIndex: previousIndex,
+          });
+        }
+      }
+    });
+
+    return conflicts;
   }
 
   async update(id: string, dto: UpdateBookingDto, actor: AuthUser) {
@@ -212,8 +444,18 @@ export class BookingsService {
     }
 
     const booking = await this.getDocument(id);
+    this.assertActorUnit(actor, String(booking.unitId));
     const previousStatus = booking.status;
     const status = dto.status ?? booking.status;
+    if (
+      previousStatus === BookingStatus.Pending &&
+      status !== BookingStatus.Pending &&
+      !actorHasPermission(actor, Permission.BookingsReview)
+    ) {
+      throw new ForbiddenException(
+        'Você não tem permissão para aprovar ou recusar treinos.',
+      );
+    }
     const studentId = dto.studentId ?? this.referenceId(booking.studentId);
     if (
       dto.status === BookingStatus.Pending &&
@@ -248,8 +490,9 @@ export class BookingsService {
     const date = dto.date ?? booking.date;
     const time = dto.time ?? booking.time;
     const durationMinutes = dto.durationMinutes ?? booking.durationMinutes;
+    const unit = await this.unitsService.findActiveById(unitId);
 
-    this.validateSchedule(date, time, durationMinutes);
+    this.validateSchedule(date, time, durationMinutes, unit?.timezone);
     if (status !== BookingStatus.Cancelled) {
       await this.assertAvailable(
         unitId,
@@ -334,6 +577,7 @@ export class BookingsService {
 
   async approve(id: string, actor: AuthUser) {
     const booking = await this.getDocument(id);
+    this.assertActorUnit(actor, String(booking.unitId));
     if (booking.status !== BookingStatus.Pending) {
       throw new BadRequestException(
         'Somente solicitações pendentes podem ser aprovadas.',
@@ -350,13 +594,19 @@ export class BookingsService {
       );
     }
     const unitId = await this.resolveUnitId(String(booking.unitId));
+    const unit = await this.unitsService.findActiveById(unitId);
     const selection = await this.resolveResources(
       booking.type,
       booking.professorId?.toString(),
       booking.equipmentId?.toString(),
       unitId,
     );
-    this.validateSchedule(booking.date, booking.time, booking.durationMinutes);
+    this.validateSchedule(
+      booking.date,
+      booking.time,
+      booking.durationMinutes,
+      unit?.timezone,
+    );
     await this.assertAvailable(
       unitId,
       selection,
@@ -403,6 +653,7 @@ export class BookingsService {
 
   async reject(id: string, reason: string | undefined, actor: AuthUser) {
     const booking = await this.getDocument(id);
+    this.assertActorUnit(actor, String(booking.unitId));
     if (booking.status !== BookingStatus.Pending) {
       throw new BadRequestException(
         'Somente solicitações pendentes podem ser recusadas.',
@@ -421,6 +672,20 @@ export class BookingsService {
 
   async cancel(id: string, reason: string | undefined, actor: AuthUser) {
     const booking = await this.getDocument(id);
+    this.assertActorUnit(actor, String(booking.unitId));
+    if (actor.role !== Role.Student) {
+      const requiredPermission =
+        booking.status === BookingStatus.Pending
+          ? Permission.BookingsReview
+          : Permission.BookingsManage;
+      if (!actorHasPermission(actor, requiredPermission)) {
+        throw new ForbiddenException(
+          booking.status === BookingStatus.Pending
+            ? 'Você não tem permissão para aprovar ou recusar treinos.'
+            : 'Você não tem permissão para gerenciar a agenda.',
+        );
+      }
+    }
     if (actor.role === Role.Student && String(booking.studentId) !== actor.id) {
       throw new ForbiddenException('Agendamento pertence a outro aluno.');
     }
@@ -434,6 +699,15 @@ export class BookingsService {
 
   async reschedule(id: string, dto: CreateBookingDto, actor: AuthUser) {
     const original = await this.getDocument(id);
+    this.assertActorUnit(actor, String(original.unitId));
+    if (
+      actor.role !== Role.Student &&
+      !actorHasPermission(actor, Permission.BookingsManage)
+    ) {
+      throw new ForbiddenException(
+        'Você não tem permissão para gerenciar a agenda.',
+      );
+    }
     if (
       actor.role === Role.Student &&
       String(original.studentId) !== actor.id
@@ -470,9 +744,12 @@ export class BookingsService {
     equipmentId?: string,
     excludeBookingId?: string,
     duration?: string,
+    actor?: AuthUser,
   ) {
     this.validateDate(date);
     const resolvedUnitId = await this.resolveUnitId(unitId);
+    if (actor) this.assertActorUnit(actor, resolvedUnitId);
+    const unit = await this.unitsService.findActiveById(resolvedUnitId);
     const selection = await this.resolveAvailabilityResources(
       type,
       professorId,
@@ -491,6 +768,7 @@ export class BookingsService {
       selection,
       bookings,
       durationMinutes,
+      unit?.timezone,
     );
     const allTimes = this.bookingStartTimes(durationMinutes);
 
@@ -512,12 +790,15 @@ export class BookingsService {
     equipmentId?: string,
     excludeBookingId?: string,
     duration?: string,
+    actor?: AuthUser,
   ) {
     if (!/^\d{4}-(?:0[1-9]|1[0-2])$/.test(month)) {
       throw new BadRequestException('Mês inválido para consultar a agenda.');
     }
     const durationMinutes = this.resolveDurationMinutes(duration);
     const resolvedUnitId = await this.resolveUnitId(unitId);
+    if (actor) this.assertActorUnit(actor, resolvedUnitId);
+    const unit = await this.unitsService.findActiveById(resolvedUnitId);
     const selection = await this.resolveAvailabilityResources(
       type,
       professorId,
@@ -538,8 +819,13 @@ export class BookingsService {
     for (let day = 1; day <= lastDay; day += 1) {
       const date = `${month}-${String(day).padStart(2, '0')}`;
       if (
-        this.availableStartTimes(date, selection, bookings, durationMinutes)
-          .length > 0
+        this.availableStartTimes(
+          date,
+          selection,
+          bookings,
+          durationMinutes,
+          unit?.timezone,
+        ).length > 0
       ) {
         availableDates.push(date);
       }
@@ -565,6 +851,9 @@ export class BookingsService {
       professorId: booking.professorId?.toString(),
       equipmentId: booking.equipmentId?.toString() ?? '',
       resourceKey: booking.resourceKey,
+      equipmentUnavailableWeekdays: [],
+      equipmentUnavailableFrom: null,
+      equipmentUnavailableUntil: null,
     };
     booking.status = status;
     Object.assign(
@@ -663,6 +952,9 @@ export class BookingsService {
       resourceKey: resolvedProfessorId
         ? `professor:${resolvedProfessorId}|equipment:${equipmentId}`
         : `equipment:${equipmentId}`,
+      equipmentUnavailableWeekdays: equipment.unavailableWeekdays ?? [],
+      equipmentUnavailableFrom: equipment.unavailableFrom ?? null,
+      equipmentUnavailableUntil: equipment.unavailableUntil ?? null,
     };
   }
 
@@ -674,6 +966,23 @@ export class BookingsService {
     durationMinutes: number,
     excludeBookingId?: string,
   ) {
+    if (selection.equipmentUnavailableWeekdays.includes(this.weekdayOf(date))) {
+      throw new ConflictException(
+        'Este equipamento não está disponível no dia da semana escolhido.',
+      );
+    }
+    if (
+      this.overlapsEquipmentUnavailablePeriod(
+        date,
+        time,
+        durationMinutes,
+        selection,
+      )
+    ) {
+      throw new ConflictException(
+        'Este equipamento está bloqueado no período escolhido.',
+      );
+    }
     const bookings = await this.findAvailabilityBookings(
       unitId,
       date,
@@ -713,7 +1022,7 @@ export class BookingsService {
     };
     return this.bookingModel
       .find(filter)
-      .select('_id date time durationMinutes professorId equipmentId')
+      .select('_id title date time durationMinutes professorId equipmentId')
       .populate('professorId', 'name')
       .populate('equipmentId', 'name')
       .lean()
@@ -725,23 +1034,45 @@ export class BookingsService {
     selection: ResourceSelection,
     bookings: AvailabilityBooking[],
     durationMinutes: number,
+    timezone?: string,
   ) {
-    if (date < this.todayIso()) return [];
+    const today = this.todayIso(timezone);
+    if (date < today) return [];
+    if (selection.equipmentUnavailableWeekdays.includes(this.weekdayOf(date)))
+      return [];
     const dayBookings = bookings.filter(
       (booking) =>
         booking.date === date && this.usesSelectedResource(booking, selection),
     );
-    const now = new Date();
-    const currentMinutes =
-      now.getHours() * 60 + now.getMinutes() + now.getSeconds() / 60;
+    const currentMinutes = this.currentMinutes(timezone);
     return this.bookingStartTimes(durationMinutes).filter(
       (time) =>
-        (date !== this.todayIso() ||
-          this.timeToMinutes(time) > currentMinutes) &&
+        (date !== today || this.timeToMinutes(time) > currentMinutes) &&
+        !this.overlapsEquipmentUnavailablePeriod(
+          date,
+          time,
+          durationMinutes,
+          selection,
+        ) &&
         dayBookings.every(
           (booking) => !this.overlaps(time, durationMinutes, booking),
         ),
     );
+  }
+
+  private overlapsEquipmentUnavailablePeriod(
+    date: string,
+    time: string,
+    durationMinutes: number,
+    selection: ResourceSelection,
+  ) {
+    const { equipmentUnavailableFrom, equipmentUnavailableUntil } = selection;
+    if (!equipmentUnavailableFrom || !equipmentUnavailableUntil) return false;
+    const start = `${date}T${time}`;
+    const end = `${date}T${this.minutesToTime(
+      this.timeToMinutes(time) + durationMinutes,
+    )}`;
+    return start < equipmentUnavailableUntil && end > equipmentUnavailableFrom;
   }
 
   private occupiedEquipmentDetails(bookings: AvailabilityBooking[]) {
@@ -844,29 +1175,30 @@ export class BookingsService {
     date: string,
     time: string,
     durationMinutes: number,
+    timezone?: string,
   ) {
     this.validateDate(date);
-    if (date < this.todayIso()) {
+    if (date < this.todayIso(timezone)) {
       throw new BadRequestException('Escolha uma data de hoje em diante.');
     }
     if (
       !Number.isInteger(durationMinutes) ||
-      durationMinutes < 60 ||
+      durationMinutes < 30 ||
       durationMinutes > 480 ||
       durationMinutes % SLOT_MINUTES !== 0
     ) {
       throw new BadRequestException(
-        'Escolha uma duração entre 1 e 8 horas, em horas inteiras.',
+        'Escolha uma duração entre 30 minutos e 8 horas, em blocos de 30 minutos.',
       );
     }
     const start = this.timeToMinutes(time);
     if (
-      !/^([01]\d|2[0-3]):00$/.test(time) ||
+      !/^([01]\d|2[0-3]):(?:00|30)$/.test(time) ||
       start < OPENING_MINUTES ||
       start + durationMinutes > CLOSING_MINUTES
     ) {
       throw new BadRequestException(
-        'Escolha um horário de hora em hora entre 08:00 e 22:00.',
+        'Escolha um horário em blocos de 30 minutos entre 08:00 e 22:00.',
       );
     }
   }
@@ -908,12 +1240,15 @@ export class BookingsService {
     );
     if (!student) throw new NotFoundException('Aluno não encontrado.');
 
+    const unit = student.unitId
+      ? await this.unitsService.findActiveById(String(student.unitId))
+      : undefined;
     const bookings = await this.bookingModel
       .find({
         studentId: new Types.ObjectId(studentId),
         type: BookingType.Training,
         status: { $in: [BookingStatus.Pending, BookingStatus.Confirmed] },
-        date: { $gte: this.todayIso() },
+        date: { $gte: this.todayIso(unit?.timezone) },
       })
       .select('_id durationMinutes originalBookingId')
       .lean()
@@ -932,7 +1267,7 @@ export class BookingsService {
           total + (booking.durationMinutes ?? DEFAULT_DURATION_MINUTES),
         0,
       );
-    const limitHours = Number(student.trainingHoursLimit ?? 8);
+    const limitHours = Number(student.trainingHoursLimit ?? 15);
     const reservedHours = reservedMinutes / 60;
     return {
       limitHours,
@@ -946,12 +1281,12 @@ export class BookingsService {
       duration === undefined ? DEFAULT_DURATION_MINUTES : Number(duration);
     if (
       !Number.isInteger(durationMinutes) ||
-      durationMinutes < 60 ||
+      durationMinutes < 30 ||
       durationMinutes > 480 ||
       durationMinutes % SLOT_MINUTES !== 0
     ) {
       throw new BadRequestException(
-        'Escolha uma duração entre 1 e 8 horas, em horas inteiras.',
+        'Escolha uma duração entre 30 minutos e 8 horas, em blocos de 30 minutos.',
       );
     }
     return durationMinutes;
@@ -974,12 +1309,66 @@ export class BookingsService {
     ).padStart(2, '0')}`;
   }
 
-  private todayIso() {
-    const now = new Date();
-    return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(
-      2,
-      '0',
-    )}-${String(now.getDate()).padStart(2, '0')}`;
+  private todayIso(timezone = 'America/Sao_Paulo') {
+    return new Intl.DateTimeFormat('en-CA', {
+      timeZone: timezone,
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+    }).format(new Date());
+  }
+
+  private currentMinutes(timezone = 'America/Sao_Paulo') {
+    const parts = new Intl.DateTimeFormat('en-US', {
+      timeZone: timezone,
+      hour: '2-digit',
+      minute: '2-digit',
+      second: '2-digit',
+      hourCycle: 'h23',
+    }).formatToParts(new Date());
+    const value = (type: Intl.DateTimeFormatPartTypes) =>
+      Number(parts.find((part) => part.type === type)?.value ?? 0);
+    return value('hour') * 60 + value('minute') + value('second') / 60;
+  }
+
+  private weekdayOf(date: string) {
+    return new Date(`${date}T12:00:00.000Z`).getUTCDay();
+  }
+
+  private assertActorUnit(actor: AuthUser, unitId: string) {
+    if (
+      actor.role === Role.Professor &&
+      (!actor.unitId || actor.unitId !== unitId)
+    ) {
+      throw new ForbiddenException(
+        'Professor só pode agendar na própria unidade.',
+      );
+    }
+  }
+
+  private assertStudentBookingHorizon(date: string, timezone?: string) {
+    const zone = timezone || 'America/Sao_Paulo';
+    const parts = new Intl.DateTimeFormat('en-CA', {
+      timeZone: zone,
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+    }).formatToParts(new Date());
+    const value = (type: Intl.DateTimeFormatPartTypes) =>
+      Number(parts.find((part) => part.type === type)?.value);
+    const today = new Date(
+      Date.UTC(value('year'), value('month') - 1, value('day'), 12),
+    );
+    const weekday = today.getUTCDay();
+    const daysUntilEndOfNextWeek = ((7 - weekday) % 7) + 7;
+    const limit = new Date(today);
+    limit.setUTCDate(today.getUTCDate() + daysUntilEndOfNextWeek);
+    const limitIso = limit.toISOString().slice(0, 10);
+    if (date > limitIso) {
+      throw new BadRequestException(
+        'Alunos podem agendar somente até o final da próxima semana.',
+      );
+    }
   }
 
   private async notifyBookingCreated(
@@ -987,10 +1376,7 @@ export class BookingsService {
     actor: AuthUser,
   ) {
     if (actor.role !== Role.Student) return;
-    const managers = await this.usersService.findActiveByRoles([
-      Role.Admin,
-      Role.Professor,
-    ]);
+    const managers = await this.usersService.findActiveReviewers();
     await this.notificationsService.createForRecipients(
       managers.map((manager) => String(manager._id)),
       {
