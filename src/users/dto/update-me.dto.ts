@@ -1,7 +1,9 @@
 import { Type } from 'class-transformer';
 import {
+  IsArray,
   IsBoolean,
   IsEmail,
+  IsMongoId,
   IsOptional,
   IsString,
   MaxLength,
@@ -58,4 +60,9 @@ export class UpdateMeDto {
   @IsOptional()
   @IsBoolean()
   showAcademicProgress?: boolean;
+
+  @IsOptional()
+  @IsArray()
+  @IsMongoId({ each: true })
+  profileCourseIds?: string[];
 }

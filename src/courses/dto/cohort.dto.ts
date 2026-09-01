@@ -88,6 +88,12 @@ export class CreateCohortWithLessonsDto extends CreateCohortDto {
   lessons!: ConfigureLessonDto[];
 }
 
+export class UpdateCohortDto {
+  @IsString()
+  @MaxLength(150)
+  name!: string;
+}
+
 export class UpdateAttendanceDto {
   @IsMongoId()
   studentId!: string;
@@ -99,4 +105,9 @@ export class UpdateAttendanceDto {
   @IsOptional()
   @IsBoolean()
   materialReleased?: boolean;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(2000)
+  observation?: string;
 }

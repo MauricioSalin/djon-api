@@ -7,12 +7,15 @@ import { AuditLog, AuditLogDocument } from './schemas/audit-log.schema';
 export interface AuditEntry {
   actorId?: string;
   actorRole?: Role;
+  actorName?: string;
+  actorEmail?: string;
   method: string;
   path: string;
   statusCode: number;
   targetId?: string;
   ip?: string;
   userAgent?: string;
+  requestBody?: unknown;
   durationMs: number;
 }
 

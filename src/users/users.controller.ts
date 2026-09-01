@@ -74,12 +74,19 @@ export class UsersController {
   }
 
   @Patch(':id/permissions')
-  @Roles(Role.Admin)
+  @Permissions(Permission.PermissionsManage)
   updatePermissions(
     @Param('id') id: string,
     @Body() dto: UpdatePermissionsDto,
+    @CurrentUser() actor: AuthUser,
   ) {
-    return this.usersService.updatePermissions(id, dto.permissions);
+    return this.usersService.updatePermissions(id, dto.permissions, actor);
+  }
+
+  @Delete(':id/permanent')
+  @Permissions(Permission.UsersManage)
+  permanentlyDeleteUser(@Param('id') id: string) {
+    return this.usersService.permanentlyDeleteUser(id);
   }
 
   @Delete(':id')

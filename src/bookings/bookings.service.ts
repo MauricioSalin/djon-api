@@ -91,7 +91,7 @@ export class BookingsService {
     if (
       actor.role !== Role.Student &&
       !courseWorkflow &&
-      !actorHasPermission(actor, Permission.BookingsManage)
+      !this.isBookingManager(actor)
     ) {
       throw new ForbiddenException(
         'Você não tem permissão para gerenciar a agenda.',
@@ -197,7 +197,10 @@ export class BookingsService {
         { studentIds: new Types.ObjectId(query.studentId) },
       ];
     }
-    if (actor.role === Role.Professor) {
+    if (
+      actor.role === Role.Professor &&
+      !this.hasAnyBookingAdminPermission(actor)
+    ) {
       if (!actor.unitId) {
         throw new ForbiddenException('Professor sem unidade vinculada.');
       }
@@ -206,7 +209,11 @@ export class BookingsService {
     if (query.professorId) {
       filter.professorId = new Types.ObjectId(query.professorId);
     }
-    if (query.unitId && actor.role !== Role.Professor)
+    if (
+      query.unitId &&
+      (actor.role !== Role.Professor ||
+        this.hasAnyBookingAdminPermission(actor))
+    )
       filter.unitId = new Types.ObjectId(query.unitId);
     if (query.status) filter.status = query.status;
     if (query.type) filter.type = query.type;
@@ -261,6 +268,7 @@ export class BookingsService {
     }
     if (
       actor.role === Role.Professor &&
+      !this.hasAnyBookingAdminPermission(actor) &&
       this.referenceId(booking.unitId) !== actor.unitId
     ) {
       throw new ForbiddenException('Agendamento pertence a outra unidade.');
@@ -273,6 +281,7 @@ export class BookingsService {
     if (actor) {
       const booking = await this.getDocument(id);
       this.assertActorUnit(actor, String(booking.unitId));
+      this.assertCanManageBooking(actor, booking);
     }
     const deleted = await this.bookingModel.findByIdAndDelete(id).exec();
     if (!deleted) throw new NotFoundException('Agendamento não encontrado.');
@@ -445,12 +454,13 @@ export class BookingsService {
 
     const booking = await this.getDocument(id);
     this.assertActorUnit(actor, String(booking.unitId));
+    this.assertCanManageBooking(actor, booking);
     const previousStatus = booking.status;
     const status = dto.status ?? booking.status;
     if (
       previousStatus === BookingStatus.Pending &&
       status !== BookingStatus.Pending &&
-      !actorHasPermission(actor, Permission.BookingsReview)
+      !this.isBookingManager(actor)
     ) {
       throw new ForbiddenException(
         'Você não tem permissão para aprovar ou recusar treinos.',
@@ -466,7 +476,16 @@ export class BookingsService {
       );
     }
     if (
-      status !== BookingStatus.Cancelled &&
+      dto.status === BookingStatus.Rejected &&
+      booking.status !== BookingStatus.Pending &&
+      booking.status !== BookingStatus.Rejected
+    ) {
+      throw new BadRequestException(
+        'Somente solicitações pendentes podem ser recusadas.',
+      );
+    }
+    if (
+      this.isActiveStatus(status) &&
       !(await this.usersService.findActiveByRole(studentId, Role.Student))
     ) {
       throw new BadRequestException('Selecione um aluno ativo.');
@@ -487,13 +506,24 @@ export class BookingsService {
       equipmentId,
       unitId,
     );
+    if (
+      actor.role === Role.Professor &&
+      !actorHasPermission(actor, Permission.BookingsManage) &&
+      !actorHasPermission(actor, Permission.CoursesManage) &&
+      booking.isClassLesson &&
+      selection.professorId !== actor.id
+    ) {
+      throw new ForbiddenException(
+        'Professor não pode transferir sua turma para outro professor.',
+      );
+    }
     const date = dto.date ?? booking.date;
     const time = dto.time ?? booking.time;
     const durationMinutes = dto.durationMinutes ?? booking.durationMinutes;
     const unit = await this.unitsService.findActiveById(unitId);
 
     this.validateSchedule(date, time, durationMinutes, unit?.timezone);
-    if (status !== BookingStatus.Cancelled) {
+    if (this.isActiveStatus(status)) {
       await this.assertAvailable(
         unitId,
         selection,
@@ -555,7 +585,7 @@ export class BookingsService {
         const original = await this.bookingModel.findById(
           booking.originalBookingId,
         );
-        if (original && original.status !== BookingStatus.Cancelled) {
+        if (original && this.isActiveStatus(original.status)) {
           await this.changeStatus(
             original,
             BookingStatus.Cancelled,
@@ -577,7 +607,12 @@ export class BookingsService {
 
   async approve(id: string, actor: AuthUser) {
     const booking = await this.getDocument(id);
-    this.assertActorUnit(actor, String(booking.unitId));
+    this.assertActorUnit(
+      actor,
+      String(booking.unitId),
+      Permission.BookingsReview,
+    );
+    this.assertCanManageBooking(actor, booking, Permission.BookingsReview);
     if (booking.status !== BookingStatus.Pending) {
       throw new BadRequestException(
         'Somente solicitações pendentes podem ser aprovadas.',
@@ -637,7 +672,7 @@ export class BookingsService {
       const original = await this.bookingModel.findById(
         booking.originalBookingId,
       );
-      if (original && original.status !== BookingStatus.Cancelled) {
+      if (original && this.isActiveStatus(original.status)) {
         await this.changeStatus(
           original,
           BookingStatus.Cancelled,
@@ -653,7 +688,12 @@ export class BookingsService {
 
   async reject(id: string, reason: string | undefined, actor: AuthUser) {
     const booking = await this.getDocument(id);
-    this.assertActorUnit(actor, String(booking.unitId));
+    this.assertActorUnit(
+      actor,
+      String(booking.unitId),
+      Permission.BookingsReview,
+    );
+    this.assertCanManageBooking(actor, booking, Permission.BookingsReview);
     if (booking.status !== BookingStatus.Pending) {
       throw new BadRequestException(
         'Somente solicitações pendentes podem ser recusadas.',
@@ -661,12 +701,12 @@ export class BookingsService {
     }
     await this.changeStatus(
       booking,
-      BookingStatus.Cancelled,
+      BookingStatus.Rejected,
       actor,
       reason,
       false,
     );
-    await this.notifyStudent(booking, BookingStatus.Cancelled, reason);
+    await this.notifyStudent(booking, BookingStatus.Rejected, reason);
     return this.findOne(id, actor);
   }
 
@@ -674,22 +714,12 @@ export class BookingsService {
     const booking = await this.getDocument(id);
     this.assertActorUnit(actor, String(booking.unitId));
     if (actor.role !== Role.Student) {
-      const requiredPermission =
-        booking.status === BookingStatus.Pending
-          ? Permission.BookingsReview
-          : Permission.BookingsManage;
-      if (!actorHasPermission(actor, requiredPermission)) {
-        throw new ForbiddenException(
-          booking.status === BookingStatus.Pending
-            ? 'Você não tem permissão para aprovar ou recusar treinos.'
-            : 'Você não tem permissão para gerenciar a agenda.',
-        );
-      }
+      this.assertCanManageBooking(actor, booking);
     }
     if (actor.role === Role.Student && String(booking.studentId) !== actor.id) {
       throw new ForbiddenException('Agendamento pertence a outro aluno.');
     }
-    if (booking.status === BookingStatus.Cancelled) return booking;
+    if (!this.isActiveStatus(booking.status)) return booking;
     await this.changeStatus(booking, BookingStatus.Cancelled, actor, reason);
     if (actor.role !== Role.Student) {
       await this.notifyStudent(booking, BookingStatus.Cancelled, reason);
@@ -700,14 +730,8 @@ export class BookingsService {
   async reschedule(id: string, dto: CreateBookingDto, actor: AuthUser) {
     const original = await this.getDocument(id);
     this.assertActorUnit(actor, String(original.unitId));
-    if (
-      actor.role !== Role.Student &&
-      !actorHasPermission(actor, Permission.BookingsManage)
-    ) {
-      throw new ForbiddenException(
-        'Você não tem permissão para gerenciar a agenda.',
-      );
-    }
+    if (actor.role !== Role.Student)
+      this.assertCanManageBooking(actor, original);
     if (
       actor.role === Role.Student &&
       String(original.studentId) !== actor.id
@@ -725,7 +749,7 @@ export class BookingsService {
       actor,
       actor.role === Role.Student &&
         original.type === BookingType.Training &&
-        original.status !== BookingStatus.Cancelled
+        this.isActiveStatus(original.status)
         ? original.durationMinutes
         : 0,
     );
@@ -1014,7 +1038,9 @@ export class BookingsService {
     if (excludeBookingId) this.ensureObjectId(excludeBookingId);
     const filter: Record<string, unknown> = {
       unitId: new Types.ObjectId(unitId),
-      status: { $ne: BookingStatus.Cancelled },
+      status: {
+        $nin: [BookingStatus.Cancelled, BookingStatus.Rejected],
+      },
       date: dateFrom === dateTo ? dateFrom : { $gte: dateFrom, $lte: dateTo },
       ...(excludeBookingId
         ? { _id: { $ne: new Types.ObjectId(excludeBookingId) } }
@@ -1126,7 +1152,7 @@ export class BookingsService {
     time: string,
     durationMinutes: number,
   ) {
-    if (status === BookingStatus.Cancelled) {
+    if (!this.isActiveStatus(status)) {
       return {
         activeSlotKey: undefined,
         activeProfessorSlotKeys: undefined,
@@ -1335,15 +1361,59 @@ export class BookingsService {
     return new Date(`${date}T12:00:00.000Z`).getUTCDay();
   }
 
-  private assertActorUnit(actor: AuthUser, unitId: string) {
+  private assertActorUnit(
+    actor: AuthUser,
+    unitId: string,
+    elevatedPermission = Permission.BookingsManage,
+  ) {
     if (
       actor.role === Role.Professor &&
+      !actorHasPermission(actor, elevatedPermission) &&
       (!actor.unitId || actor.unitId !== unitId)
     ) {
       throw new ForbiddenException(
         'Professor só pode agendar na própria unidade.',
       );
     }
+  }
+
+  private isBookingManager(actor: AuthUser) {
+    return actor.role === Role.Admin || actor.role === Role.Professor;
+  }
+
+  private isActiveStatus(status: BookingStatus) {
+    return (
+      status === BookingStatus.Pending || status === BookingStatus.Confirmed
+    );
+  }
+
+  private assertCanManageBooking(
+    actor: AuthUser,
+    booking: BookingDocument,
+    elevatedPermission = Permission.BookingsManage,
+  ) {
+    if (!this.isBookingManager(actor)) {
+      throw new ForbiddenException(
+        'Você não tem permissão para gerenciar a agenda.',
+      );
+    }
+    if (
+      actor.role === Role.Professor &&
+      !actorHasPermission(actor, elevatedPermission) &&
+      booking.isClassLesson &&
+      this.referenceId(booking.professorId) !== actor.id
+    ) {
+      throw new ForbiddenException(
+        'Professor só pode gerenciar as turmas em que é responsável.',
+      );
+    }
+  }
+
+  private hasAnyBookingAdminPermission(actor: AuthUser) {
+    return (
+      actorHasPermission(actor, Permission.BookingsManage) ||
+      actorHasPermission(actor, Permission.BookingsReview)
+    );
   }
 
   private assertStudentBookingHorizon(date: string, timezone?: string) {
@@ -1376,7 +1446,9 @@ export class BookingsService {
     actor: AuthUser,
   ) {
     if (actor.role !== Role.Student) return;
-    const managers = await this.usersService.findActiveReviewers();
+    const managers = await this.usersService.findActiveReviewers(
+      String(booking.unitId),
+    );
     await this.notificationsService.createForRecipients(
       managers.map((manager) => String(manager._id)),
       {
@@ -1395,7 +1467,11 @@ export class BookingsService {
     reason?: string,
   ) {
     const label =
-      status === BookingStatus.Confirmed ? 'aprovado' : 'cancelado/recusado';
+      status === BookingStatus.Confirmed
+        ? 'aprovado'
+        : status === BookingStatus.Rejected
+          ? 'recusado'
+          : 'cancelado';
     await this.notificationsService.createForRecipients(
       [String(booking.studentId)],
       {

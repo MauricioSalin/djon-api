@@ -11,7 +11,9 @@ import {
 import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
 import { CurrentUser } from '../common/decorators/current-user.decorator';
 import { Permissions } from '../common/decorators/permissions.decorator';
+import { Roles } from '../common/decorators/roles.decorator';
 import { Permission } from '../common/enums/permission.enum';
+import { Role } from '../common/enums/role.enum';
 import type { AuthUser } from '../common/interfaces/auth-user.interface';
 import { CategoryDto, DeleteCategoryDto } from './dto/category.dto';
 import { CreateMaterialDto } from './dto/create-material.dto';
@@ -26,7 +28,7 @@ export class MaterialsController {
   constructor(private readonly materialsService: MaterialsService) {}
 
   @Post()
-  @Permissions(Permission.MaterialsManage)
+  @Roles(Role.Admin, Role.Professor)
   create(@Body() dto: CreateMaterialDto, @CurrentUser() actor: AuthUser) {
     return this.materialsService.create(dto, actor);
   }
@@ -65,7 +67,7 @@ export class MaterialsController {
   }
 
   @Patch(':id')
-  @Permissions(Permission.MaterialsManage)
+  @Roles(Role.Admin, Role.Professor)
   update(
     @Param('id') id: string,
     @Body() dto: UpdateMaterialDto,
@@ -75,7 +77,7 @@ export class MaterialsController {
   }
 
   @Delete(':id')
-  @Permissions(Permission.MaterialsManage)
+  @Roles(Role.Admin, Role.Professor)
   remove(@Param('id') id: string, @CurrentUser() actor: AuthUser) {
     return this.materialsService.remove(id, actor);
   }

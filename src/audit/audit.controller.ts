@@ -4,15 +4,15 @@ import {
   Get,
   ParseIntPipe,
   Query,
+  UseGuards,
 } from '@nestjs/common';
 import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
-import { Permissions } from '../common/decorators/permissions.decorator';
-import { Permission } from '../common/enums/permission.enum';
+import { AuditAccessGuard } from './audit-access.guard';
 import { AuditService } from './audit.service';
 
 @ApiTags('audit-logs')
 @ApiBearerAuth()
-@Permissions(Permission.AuditRead)
+@UseGuards(AuditAccessGuard)
 @Controller('audit-logs')
 export class AuditController {
   constructor(private readonly auditService: AuditService) {}

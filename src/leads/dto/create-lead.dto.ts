@@ -1,4 +1,10 @@
-import { IsEmail, IsOptional, IsString, MaxLength } from 'class-validator';
+import {
+  IsEmail,
+  IsOptional,
+  IsString,
+  Matches,
+  MaxLength,
+} from 'class-validator';
 
 export class CreateLeadDto {
   @IsOptional()
@@ -11,8 +17,15 @@ export class CreateLeadDto {
   @MaxLength(100)
   lastName?: string;
 
+  @IsOptional()
   @IsEmail()
-  email!: string;
+  email?: string;
+
+  @IsString()
+  @Matches(/^\d{10,11}$/, {
+    message: 'O WhatsApp deve conter DDD e número.',
+  })
+  whatsapp!: string;
 
   @IsOptional()
   @IsString()

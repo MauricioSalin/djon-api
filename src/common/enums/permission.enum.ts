@@ -1,5 +1,7 @@
 export enum Permission {
+  AdminAccess = 'admin.access',
   UsersManage = 'users.manage',
+  PermissionsManage = 'permissions.manage',
   LeadsManage = 'leads.manage',
   BookingsManage = 'bookings.manage',
   BookingsReview = 'bookings.review',
@@ -8,5 +10,8 @@ export enum Permission {
   MaterialsManage = 'materials.manage',
   UnitsManage = 'units.manage',
   EquipmentsManage = 'equipments.manage',
-  AuditRead = 'audit.read',
+  EventsManage = 'events.manage',
+  NotificationsManage = 'notifications.manage',
+  PortalEdit = 'portal.edit',
+  SiteEdit = 'site.edit',
 }

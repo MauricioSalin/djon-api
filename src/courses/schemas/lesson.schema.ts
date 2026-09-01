@@ -12,6 +12,9 @@ export class LessonAttendance {
   @Prop({ default: false })
   materialReleased!: boolean;
 
+  @Prop({ trim: true, maxlength: 2000 })
+  observation?: string;
+
   @Prop({ type: Types.ObjectId, ref: 'User' })
   markedBy?: Types.ObjectId;
 

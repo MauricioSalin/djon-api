@@ -12,6 +12,7 @@ export enum BookingType {
 export enum BookingStatus {
   Confirmed = 'confirmado',
   Pending = 'pendente',
+  Rejected = 'recusado',
   Cancelled = 'cancelado',
 }
 

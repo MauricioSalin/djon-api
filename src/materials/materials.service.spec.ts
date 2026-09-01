@@ -1,4 +1,5 @@
 import { Types } from 'mongoose';
+import { ForbiddenException } from '@nestjs/common';
 import { Role } from '../common/enums/role.enum';
 import type { AuthUser } from '../common/interfaces/auth-user.interface';
 import { MaterialsService } from './materials.service';
@@ -170,5 +171,163 @@ describe('MaterialsService - capa automática', () => {
         actor,
       ),
     ).rejects.toThrow('Selecione uma categoria antes de publicar.');
+  });
+});
+
+describe('MaterialsService - autoria e edição', () => {
+  const authorId = new Types.ObjectId().toString();
+  const author: AuthUser = {
+    id: authorId,
+    email: 'autor@teste.com',
+    role: Role.Professor,
+  };
+  const otherProfessor: AuthUser = {
+    id: new Types.ObjectId().toString(),
+    email: 'outro-professor@teste.com',
+    role: Role.Professor,
+  };
+  const admin: AuthUser = {
+    id: new Types.ObjectId().toString(),
+    email: 'admin@teste.com',
+    role: Role.Admin,
+  };
+  const draft = {
+    authorId: new Types.ObjectId(authorId),
+    status: MaterialStatus.Draft,
+  };
+  const courseDraft = {
+    ...draft,
+    courseId: new Types.ObjectId(),
+  };
+  const published = {
+    ...draft,
+    status: MaterialStatus.Published,
+  };
+  const publishedCourseMaterial = {
+    ...published,
+    courseId: new Types.ObjectId(),
+  };
+  const materialModel = {
+    findById: jest.fn().mockResolvedValue(draft),
+  };
+  const filesService = {
+    extractFileIds: jest.fn().mockReturnValue([]),
+    removeFileIds: jest.fn().mockResolvedValue(undefined),
+  };
+  const service = new MaterialsService(
+    materialModel as never,
+    {} as never,
+    {} as never,
+    {} as never,
+    {} as never,
+    {} as never,
+    filesService as never,
+  );
+  const authorization = service as unknown as {
+    getOwned(
+      id: string,
+      actor: AuthUser,
+      allowCourseProfessor?: boolean,
+    ): Promise<unknown>;
+    visibilityFilter(actor: AuthUser): Record<string, unknown>;
+  };
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    materialModel.findById.mockResolvedValue(draft);
+  });
+
+  it('impede que o admin edite rascunho de outro autor', async () => {
+    await expect(
+      authorization.getOwned('material-id', admin),
+    ).rejects.toBeInstanceOf(ForbiddenException);
+  });
+
+  it('permite que o professor edite o próprio material', async () => {
+    await expect(authorization.getOwned('material-id', author)).resolves.toBe(
+      draft,
+    );
+  });
+
+  it('impede professor de editar material de outro autor', async () => {
+    materialModel.findById.mockResolvedValueOnce(published);
+
+    await expect(
+      authorization.getOwned('material-id', otherProfessor),
+    ).rejects.toBeInstanceOf(ForbiddenException);
+  });
+
+  it('permite que professor edite aula publicada de outro autor', async () => {
+    materialModel.findById.mockResolvedValueOnce(publishedCourseMaterial);
+
+    await expect(
+      authorization.getOwned('material-id', otherProfessor, true),
+    ).resolves.toBe(publishedCourseMaterial);
+  });
+
+  it('mantém rascunho de curso visível e editável somente pelo autor', async () => {
+    materialModel.findById.mockResolvedValueOnce(courseDraft);
+
+    await expect(
+      authorization.getOwned('material-id', otherProfessor, true),
+    ).rejects.toBeInstanceOf(ForbiddenException);
+  });
+
+  it('permite que professor remova aula publicada de outro autor', async () => {
+    const removableCourseMaterial = {
+      ...publishedCourseMaterial,
+      deleteOne: jest.fn().mockResolvedValue(undefined),
+    };
+    materialModel.findById.mockResolvedValueOnce(removableCourseMaterial);
+
+    await expect(
+      service.remove('material-id', otherProfessor),
+    ).resolves.toEqual({ id: 'material-id', removed: true });
+    expect(removableCourseMaterial.deleteOne).toHaveBeenCalled();
+  });
+
+  it('permite que professor remova o próprio rascunho', async () => {
+    const removableDraft = {
+      ...draft,
+      deleteOne: jest.fn().mockResolvedValue(undefined),
+    };
+    materialModel.findById.mockResolvedValueOnce(removableDraft);
+
+    await expect(service.remove('material-id', author)).resolves.toEqual({
+      id: 'material-id',
+      removed: true,
+    });
+    expect(removableDraft.deleteOne).toHaveBeenCalled();
+  });
+
+  it('impede que professor remova material publicado de outro autor', async () => {
+    materialModel.findById.mockResolvedValueOnce(published);
+
+    await expect(
+      service.remove('material-id', otherProfessor),
+    ).rejects.toBeInstanceOf(ForbiddenException);
+  });
+
+  it('permite que o admin edite material publicado de outro autor', async () => {
+    materialModel.findById.mockResolvedValueOnce(published);
+
+    await expect(authorization.getOwned('material-id', admin)).resolves.toBe(
+      published,
+    );
+  });
+
+  it.each([
+    ['admin', admin],
+    ['professor', otherProfessor],
+  ] as const)('limita rascunhos ao próprio autor para %s', (_label, actor) => {
+    const filter = authorization.visibilityFilter(actor) as {
+      $or: Array<Record<string, unknown>>;
+    };
+
+    expect(filter.$or).toHaveLength(2);
+    expect(filter.$or[1]).toEqual({
+      status: MaterialStatus.Draft,
+      authorId: new Types.ObjectId(actor.id),
+    });
   });
 });

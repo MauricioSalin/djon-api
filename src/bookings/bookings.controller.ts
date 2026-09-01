@@ -103,7 +103,6 @@ export class BookingsController {
 
   @Patch(':id')
   @Roles(Role.Admin, Role.Professor)
-  @Permissions(Permission.BookingsManage)
   update(
     @Param('id') id: string,
     @Body() dto: UpdateBookingDto,
@@ -114,14 +113,12 @@ export class BookingsController {
 
   @Post(':id/approve')
   @Roles(Role.Admin, Role.Professor)
-  @Permissions(Permission.BookingsReview)
   approve(@Param('id') id: string, @CurrentUser() actor: AuthUser) {
     return this.bookingsService.approve(id, actor);
   }
 
   @Post(':id/reject')
   @Roles(Role.Admin, Role.Professor)
-  @Permissions(Permission.BookingsReview)
   reject(
     @Param('id') id: string,
     @Body() dto: ReviewBookingDto,

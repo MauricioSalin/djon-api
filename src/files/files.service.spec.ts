@@ -1,5 +1,6 @@
 import { ConfigService } from '@nestjs/config';
 import { Types } from 'mongoose';
+import { Permission } from '../common/enums/permission.enum';
 import { Role } from '../common/enums/role.enum';
 import type { AuthUser } from '../common/interfaces/auth-user.interface';
 import {
@@ -89,11 +90,70 @@ describe('FilesService - limites de upload', () => {
     expect(clientSend).not.toHaveBeenCalled();
   });
 
+  it('não aplica limite de tamanho às imagens inseridas no corpo do material', async () => {
+    const bodyImage = {
+      ...file(MATERIAL_ATTACHMENT_LIMIT_BYTES + 1),
+      originalname: 'imagem-do-corpo.png',
+      mimetype: 'image/png',
+    };
+
+    await expect(
+      service.upload(bodyImage, actor, 'rich-text'),
+    ).resolves.toEqual(
+      expect.objectContaining({
+        id: storedId,
+        size: MATERIAL_ATTACHMENT_LIMIT_BYTES + 1,
+        purpose: 'rich-text',
+      }),
+    );
+    expect(clientSend).toHaveBeenCalledTimes(1);
+  });
+
   it('mantém o limite de 50 MB para as demais finalidades', async () => {
     await expect(
       service.upload(file(DEFAULT_FILE_LIMIT_BYTES + 1), actor, 'other'),
     ).rejects.toThrow('O arquivo excede o limite de 50 MB.');
     expect(clientSend).not.toHaveBeenCalled();
+  });
+
+  it('aceita somente imagem para o banner do portal', async () => {
+    const portalEditor = {
+      ...actor,
+      permissions: [Permission.PortalEdit],
+    };
+    const image = {
+      ...file(1024),
+      originalname: 'hero.webp',
+      mimetype: 'image/webp',
+    };
+
+    await expect(
+      service.upload(image, portalEditor, 'portal-banner'),
+    ).resolves.toEqual(expect.objectContaining({ purpose: 'portal-banner' }));
+    await expect(
+      service.upload(file(1024), portalEditor, 'portal-banner'),
+    ).rejects.toThrow('Esta finalidade aceita somente arquivos de imagem.');
+    await expect(service.upload(image, actor, 'portal-banner')).rejects.toThrow(
+      'Você não tem permissão para editar o portal.',
+    );
+  });
+
+  it('protege imagens do site principal com permissão separada', async () => {
+    const image = {
+      ...file(1024),
+      originalname: 'equipe.webp',
+      mimetype: 'image/webp',
+    };
+    await expect(
+      service.upload(
+        image,
+        { ...actor, permissions: [Permission.SiteEdit] },
+        'site-image',
+      ),
+    ).resolves.toEqual(expect.objectContaining({ purpose: 'site-image' }));
+    await expect(service.upload(image, actor, 'site-image')).rejects.toThrow(
+      'Você não tem permissão para editar o site principal.',
+    );
   });
 
   it('recusa upload direto de vídeo em materiais', async () => {

@@ -113,8 +113,17 @@ export class User {
   @Prop({ default: true })
   showAcademicProgress!: boolean;
 
+  @Prop({ type: [Types.ObjectId], ref: 'Course', default: undefined })
+  profileCourseIds?: Types.ObjectId[];
+
   @Prop({ default: false })
   passwordChangeRequired!: boolean;
+
+  @Prop({ select: false, index: true })
+  passwordResetTokenHash?: string;
+
+  @Prop({ select: false })
+  passwordResetExpiresAt?: Date;
 
   @Prop({ default: true, index: true })
   active!: boolean;

@@ -1,5 +1,5 @@
 import { Prop, Schema, SchemaFactory } from '@nestjs/mongoose';
-import { HydratedDocument, Types } from 'mongoose';
+import { HydratedDocument, SchemaTypes, Types } from 'mongoose';
 import { Role } from '../../common/enums/role.enum';
 import { User } from '../../users/schemas/user.schema';
 
@@ -12,6 +12,12 @@ export class AuditLog {
 
   @Prop({ type: String, enum: Role })
   actorRole?: Role;
+
+  @Prop({ trim: true })
+  actorName?: string;
+
+  @Prop({ lowercase: true, trim: true, index: true })
+  actorEmail?: string;
 
   @Prop({ required: true, index: true })
   method!: string;
@@ -31,6 +37,9 @@ export class AuditLog {
   @Prop()
   userAgent?: string;
 
+  @Prop({ type: SchemaTypes.Mixed })
+  requestBody?: unknown;
+
   @Prop({ required: true })
   durationMs!: number;
 
@@ -39,3 +48,4 @@ export class AuditLog {
 
 export const AuditLogSchema = SchemaFactory.createForClass(AuditLog);
 AuditLogSchema.index({ createdAt: -1 });
+AuditLogSchema.index({ actorEmail: 1, createdAt: -1 });

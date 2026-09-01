@@ -1,6 +1,5 @@
 import { Types } from 'mongoose';
 import { Role } from '../common/enums/role.enum';
-import { Permission } from '../common/enums/permission.enum';
 import { BookingsService } from './bookings.service';
 import { BookingStatus, BookingType } from './schemas/booking.schema';
 
@@ -18,6 +17,9 @@ describe('BookingsService - recursos e disponibilidade', () => {
   const equipmentsService = {
     findActiveById: jest.fn(),
   };
+  const notificationsService = {
+    createForRecipients: jest.fn(),
+  };
   const bookingModel = {
     create: jest.fn(),
     find: jest.fn(),
@@ -29,7 +31,7 @@ describe('BookingsService - recursos e disponibilidade', () => {
     usersService as never,
     unitsService as never,
     equipmentsService as never,
-    {} as never,
+    notificationsService as never,
   );
 
   const tomorrow = () => {
@@ -162,7 +164,6 @@ describe('BookingsService - recursos e disponibilidade', () => {
           email: 'professor@teste.com',
           role: Role.Professor,
           unitId: unitId.toString(),
-          permissions: [Permission.BookingsManage],
         },
       ),
     ).rejects.toThrow('interromper após validar');
@@ -394,7 +395,6 @@ describe('BookingsService - recursos e disponibilidade', () => {
         email: 'professor@teste.com',
         role: Role.Professor,
         unitId: unitId.toString(),
-        permissions: [Permission.BookingsReview],
       }),
     ).rejects.toThrow(
       'O aluno está desativado e a solicitação não pode ser aprovada.',
@@ -420,6 +420,158 @@ describe('BookingsService - recursos e disponibilidade', () => {
         { id: actorId, email: 'admin@teste.com', role: Role.Admin },
       ),
     ).rejects.toThrow('Selecione um aluno ativo.');
+  });
+
+  it('revalida conflito de equipamento quando professor edita qualquer treino', async () => {
+    const bookingId = new Types.ObjectId().toString();
+    const studentId = new Types.ObjectId();
+    const equipmentId = new Types.ObjectId();
+    bookingModel.findById.mockReturnValue({
+      exec: jest.fn().mockResolvedValue({
+        _id: bookingId,
+        studentId,
+        unitId,
+        equipmentId,
+        title: 'Treino original',
+        date: '2030-08-20',
+        time: '18:00',
+        durationMinutes: 60,
+        type: BookingType.Training,
+        status: BookingStatus.Confirmed,
+        statusHistory: [],
+      }),
+    });
+    equipmentsService.findActiveById.mockResolvedValue({
+      id: equipmentId,
+      unitId,
+      unavailableWeekdays: [],
+    });
+    const availabilityQuery = {
+      select: jest.fn(),
+      populate: jest.fn(),
+      lean: jest.fn(),
+      exec: jest.fn().mockResolvedValue([
+        {
+          _id: new Types.ObjectId(),
+          title: 'Outro treino',
+          date: '2030-08-21',
+          time: '19:00',
+          durationMinutes: 60,
+          equipmentId,
+        },
+      ]),
+    };
+    availabilityQuery.select.mockReturnValue(availabilityQuery);
+    availabilityQuery.populate.mockReturnValue(availabilityQuery);
+    availabilityQuery.lean.mockReturnValue(availabilityQuery);
+    bookingModel.find.mockReturnValue(availabilityQuery);
+
+    await expect(
+      service.update(
+        bookingId,
+        { date: '2030-08-21', time: '19:00' },
+        {
+          id: actorId,
+          email: 'professor@teste.com',
+          role: Role.Professor,
+          unitId: unitId.toString(),
+        },
+      ),
+    ).rejects.toThrow('Este equipamento já está reservado nesse horário.');
+    expect(bookingModel.find).toHaveBeenCalledWith(
+      expect.objectContaining({
+        _id: { $ne: new Types.ObjectId(bookingId) },
+        status: {
+          $nin: [BookingStatus.Cancelled, BookingStatus.Rejected],
+        },
+      }),
+    );
+  });
+
+  it('impede professor de gerenciar turma atribuída a outro professor', async () => {
+    const bookingId = new Types.ObjectId().toString();
+    bookingModel.findById.mockReturnValue({
+      exec: jest.fn().mockResolvedValue({
+        _id: bookingId,
+        unitId,
+        professorId: new Types.ObjectId(),
+        isClassLesson: true,
+      }),
+    });
+
+    await expect(
+      service.update(
+        bookingId,
+        { date: '2030-08-21' },
+        {
+          id: actorId,
+          email: 'professor@teste.com',
+          role: Role.Professor,
+          unitId: unitId.toString(),
+        },
+      ),
+    ).rejects.toThrow(
+      'Professor só pode gerenciar as turmas em que é responsável.',
+    );
+  });
+
+  it('persiste recusa como recusado e libera os bloqueios do equipamento', async () => {
+    const bookingId = new Types.ObjectId().toString();
+    const studentId = new Types.ObjectId();
+    const equipmentId = new Types.ObjectId();
+    const booking = {
+      _id: bookingId,
+      id: bookingId,
+      studentId,
+      unitId,
+      equipmentId,
+      resourceKey: `equipment:${equipmentId.toString()}`,
+      title: 'Solicitação de treino',
+      date: '2030-08-20',
+      time: '18:00',
+      durationMinutes: 60,
+      type: BookingType.Training,
+      status: BookingStatus.Pending,
+      activeSlotKey: 'slot',
+      activeEquipmentSlotKeys: ['slot'],
+      statusHistory: [],
+      save: jest.fn().mockResolvedValue(undefined),
+    };
+    const populatedQuery = {
+      populate: jest.fn(),
+      lean: jest.fn(),
+      exec: jest.fn().mockResolvedValue(booking),
+    };
+    populatedQuery.populate.mockReturnValue(populatedQuery);
+    populatedQuery.lean.mockReturnValue(populatedQuery);
+    bookingModel.findById
+      .mockReturnValueOnce({ exec: jest.fn().mockResolvedValue(booking) })
+      .mockReturnValueOnce(populatedQuery);
+
+    await service.reject(bookingId, 'Horário indisponível.', {
+      id: actorId,
+      email: 'professor@teste.com',
+      role: Role.Professor,
+      unitId: unitId.toString(),
+    });
+
+    expect(booking.status).toBe(BookingStatus.Rejected);
+    expect(booking.activeSlotKey).toBeUndefined();
+    expect(booking.activeEquipmentSlotKeys).toBeUndefined();
+    expect(booking.statusHistory).toEqual([
+      expect.objectContaining({
+        status: BookingStatus.Rejected,
+        reason: 'Horário indisponível.',
+      }),
+    ]);
+    expect(booking.save).toHaveBeenCalledTimes(1);
+    expect(notificationsService.createForRecipients).toHaveBeenCalledWith(
+      [studentId.toString()],
+      expect.objectContaining({
+        type: 'booking.recusado',
+        title: 'Agendamento recusado',
+      }),
+    );
   });
 
   it('recusa equipamento que pertence a outra unidade', async () => {
@@ -491,7 +643,11 @@ describe('BookingsService - recursos e disponibilidade', () => {
       ]),
     );
     expect(bookingModel.find).toHaveBeenCalledWith(
-      expect.objectContaining({ status: { $ne: 'cancelado' } }),
+      expect.objectContaining({
+        status: {
+          $nin: [BookingStatus.Cancelled, BookingStatus.Rejected],
+        },
+      }),
     );
   });
 

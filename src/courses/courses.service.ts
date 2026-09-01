@@ -36,6 +36,7 @@ import {
   CreateCohortDto,
   CreateCohortWithLessonsDto,
   UpdateAttendanceDto,
+  UpdateCohortDto,
 } from './dto/cohort.dto';
 import { CreateCourseDto, UpdateCourseDto } from './dto/course.dto';
 import { Cohort, CohortDocument, CohortStatus } from './schemas/cohort.schema';
@@ -98,7 +99,10 @@ export class CoursesService {
     }
   }
 
-  async updateCourse(id: string, dto: UpdateCourseDto) {
+  async updateCourse(id: string, dto: UpdateCourseDto, actor?: AuthUser) {
+    const existing = await this.courseModel.findById(id);
+    if (!existing) throw new NotFoundException('Curso não encontrado.');
+    this.assertCourseManageable(existing, actor);
     const course = await this.courseModel.findByIdAndUpdate(
       id,
       {
@@ -117,9 +121,10 @@ export class CoursesService {
     return course;
   }
 
-  async deleteCourse(id: string) {
+  async deleteCourse(id: string, actor?: AuthUser) {
     const course = await this.courseModel.findById(id);
     if (!course) throw new NotFoundException('Curso não encontrado.');
+    this.assertCourseManageable(course, actor);
 
     const [cohortCount, materialCount] = await Promise.all([
       this.cohortModel.countDocuments({ courseId: course._id }),
@@ -140,7 +145,10 @@ export class CoursesService {
     if (studentIds.length !== dto.studentIds.length) {
       throw new BadRequestException('A lista de alunos contém duplicidades.');
     }
-    if (actor.role === Role.Professor) {
+    if (
+      actor.role === Role.Professor &&
+      !actorHasPermission(actor, Permission.CoursesManage)
+    ) {
       if (actor.id !== dto.professorId || actor.unitId !== dto.unitId) {
         throw new ForbiddenException(
           'Professor só pode criar turmas para si na própria unidade.',
@@ -243,6 +251,29 @@ export class CoursesService {
       if (cohortId) await this.cohortModel.findByIdAndDelete(cohortId).exec();
       throw error;
     }
+  }
+
+  async updateCohort(id: string, dto: UpdateCohortDto, actor: AuthUser) {
+    const cohort = await this.getManageableCohort(id, actor);
+    cohort.name = dto.name.trim();
+    await cohort.save();
+    return this.findOneCohort(id, actor);
+  }
+
+  async deleteCohort(id: string, actor: AuthUser) {
+    const cohort = await this.getManageableCohort(id, actor);
+    const lessons = await this.lessonModel
+      .find({ cohortId: cohort._id })
+      .select('bookingId');
+
+    await Promise.all(
+      lessons.map((lesson) =>
+        this.bookingsService.remove(String(lesson.bookingId)),
+      ),
+    );
+    await this.lessonModel.deleteMany({ cohortId: cohort._id });
+    await cohort.deleteOne();
+    return { deleted: true };
   }
 
   async configureLessons(
@@ -356,6 +387,12 @@ export class CoursesService {
     const filter: Record<string, unknown> = {};
     if (actor.role === Role.Student) {
       filter.studentIds = new Types.ObjectId(actor.id);
+    } else if (
+      actor.role === Role.Professor &&
+      !actorHasPermission(actor, Permission.CoursesManage) &&
+      !actorHasPermission(actor, Permission.AttendanceManage)
+    ) {
+      filter.professorId = new Types.ObjectId(actor.id);
     }
     const cohorts = await this.cohortModel
       .find(filter)
@@ -410,6 +447,167 @@ export class CoursesService {
     };
   }
 
+  async findStudentObservations(studentId: string, actor?: AuthUser) {
+    if (!Types.ObjectId.isValid(studentId)) {
+      throw new BadRequestException('Aluno inválido.');
+    }
+    const studentObjectId = new Types.ObjectId(studentId);
+    const student = await this.userModel.exists({
+      _id: studentObjectId,
+      role: Role.Student,
+    });
+    if (!student) throw new NotFoundException('Aluno não encontrado.');
+
+    const lessons = await this.lessonModel
+      .find({
+        attendance: {
+          $elemMatch: {
+            studentId: studentObjectId,
+            observation: { $exists: true, $ne: '' },
+          },
+        },
+      })
+      .sort({ date: -1, time: -1 })
+      .lean({ virtuals: true });
+
+    if (!lessons.length) return [];
+
+    const cohorts = await this.cohortModel
+      .find({
+        _id: { $in: lessons.map((lesson) => lesson.cohortId) },
+        ...(actor?.role === Role.Professor &&
+        !actorHasPermission(actor, Permission.CoursesManage) &&
+        !actorHasPermission(actor, Permission.AttendanceManage)
+          ? { professorId: new Types.ObjectId(actor.id) }
+          : {}),
+      })
+      .populate('courseId', 'name')
+      .populate('professorId', 'name')
+      .lean({ virtuals: true });
+    const cohortsById = new Map(
+      cohorts.map((cohort) => [String(cohort._id), cohort]),
+    );
+
+    return lessons.flatMap((lesson) => {
+      const attendance = lesson.attendance.find(
+        (item) =>
+          String(item.studentId) === studentId &&
+          Boolean(item.observation?.trim()),
+      );
+      const cohort = cohortsById.get(String(lesson.cohortId));
+      if (!attendance || !cohort) return [];
+
+      const course = cohort.courseId as unknown as { name?: string };
+      const professor = cohort.professorId as unknown as { name?: string };
+      return [
+        {
+          id: `${String(lesson._id)}:${studentId}`,
+          courseName: course.name ?? 'Curso',
+          cohortName: cohort.name,
+          lessonId: String(lesson._id),
+          lessonOrder: lesson.order,
+          lessonTitle: lesson.title,
+          date: lesson.date,
+          time: lesson.time,
+          observation: attendance.observation!.trim(),
+          professorName: professor.name,
+        },
+      ];
+    });
+  }
+
+  async findStudentCourseProgress(studentId: string, actor: AuthUser) {
+    if (!Types.ObjectId.isValid(studentId)) {
+      throw new BadRequestException('Aluno inválido.');
+    }
+    const studentObjectId = new Types.ObjectId(studentId);
+    const student = await this.userModel
+      .findOne({ _id: studentObjectId, role: Role.Student, active: true })
+      .select('showAcademicProgress profileCourseIds')
+      .lean()
+      .exec();
+    if (!student) throw new NotFoundException('Aluno não encontrado.');
+
+    const isOwner = actor.id === studentId;
+    if (!isOwner && student.showAcademicProgress === false) return [];
+
+    const cohorts = await this.cohortModel
+      .find({ studentIds: studentObjectId })
+      .populate('courseId', 'name description coverImage active')
+      .lean({ virtuals: true });
+    if (!cohorts.length) return [];
+
+    const lessons = await this.lessonModel
+      .find({ cohortId: { $in: cohorts.map((cohort) => cohort._id) } })
+      .select('cohortId attendance')
+      .lean();
+    const courseIds = Array.isArray(student.profileCourseIds)
+      ? new Set(student.profileCourseIds.map(String))
+      : null;
+    const progressByCourse = new Map<
+      string,
+      {
+        id: string;
+        name: string;
+        description?: string;
+        coverImage?: string;
+        completed: number;
+        total: number;
+      }
+    >();
+    const courseIdByCohort = new Map<string, string>();
+
+    for (const cohort of cohorts) {
+      const course = cohort.courseId as unknown as {
+        _id?: Types.ObjectId;
+        id?: string;
+        name?: string;
+        description?: string;
+        coverImage?: string;
+      };
+      const courseId = String(course?._id ?? course?.id ?? '');
+      if (!courseId) continue;
+      courseIdByCohort.set(String(cohort._id), courseId);
+      if (!progressByCourse.has(courseId)) {
+        progressByCourse.set(courseId, {
+          id: courseId,
+          name: course.name ?? 'Curso',
+          description: course.description,
+          coverImage: course.coverImage,
+          completed: 0,
+          total: 0,
+        });
+      }
+    }
+
+    for (const lesson of lessons) {
+      const courseId = courseIdByCohort.get(String(lesson.cohortId));
+      const progress = courseId ? progressByCourse.get(courseId) : undefined;
+      if (!progress) continue;
+      progress.total += 1;
+      if (
+        lesson.attendance.some(
+          (item) => String(item.studentId) === studentId && item.present,
+        )
+      ) {
+        progress.completed += 1;
+      }
+    }
+
+    return [...progressByCourse.values()]
+      .map((course) => ({
+        ...course,
+        percent: course.total
+          ? Math.round((course.completed / course.total) * 100)
+          : 0,
+        visible:
+          student.showAcademicProgress !== false &&
+          (courseIds === null || courseIds.has(course.id)),
+      }))
+      .filter((course) => isOwner || course.visible)
+      .sort((first, second) => first.name.localeCompare(second.name, 'pt-BR'));
+  }
+
   async updateAttendance(
     lessonId: string,
     dto: UpdateAttendanceDto,
@@ -420,6 +618,7 @@ export class CoursesService {
     const cohort = await this.getManageableCohort(
       String(lesson.cohortId),
       actor,
+      Permission.AttendanceManage,
     );
     if (!cohort.studentIds.some((id) => String(id) === dto.studentId)) {
       throw new BadRequestException('Aluno não pertence a esta turma.');
@@ -435,17 +634,25 @@ export class CoursesService {
     } else if (dto.materialReleased !== undefined) {
       attendance.materialReleased = dto.materialReleased;
     }
+    if (dto.observation !== undefined) {
+      attendance.observation = dto.observation.trim() || undefined;
+    }
     attendance.markedBy = new Types.ObjectId(actor.id);
     attendance.markedAt = new Date();
     await lesson.save();
     return this.findOneCohort(String(cohort.id), actor);
   }
 
-  private async getManageableCohort(id: string, actor: AuthUser) {
+  private async getManageableCohort(
+    id: string,
+    actor: AuthUser,
+    elevatedPermission = Permission.CoursesManage,
+  ) {
     const cohort = await this.cohortModel.findById(id);
     if (!cohort) throw new NotFoundException('Turma não encontrada.');
     if (
       actor.role === Role.Professor &&
+      !actorHasPermission(actor, elevatedPermission) &&
       (String(cohort.professorId) !== actor.id ||
         String(cohort.unitId) !== actor.unitId)
     ) {
@@ -466,6 +673,31 @@ export class CoursesService {
     ) {
       throw new ForbiddenException('Você não participa desta turma.');
     }
+    if (
+      actor.role === Role.Professor &&
+      !actorHasPermission(actor, Permission.CoursesManage) &&
+      !actorHasPermission(actor, Permission.AttendanceManage) &&
+      (this.referenceId(cohort.professorId) !== actor.id ||
+        this.referenceId(cohort.unitId) !== actor.unitId)
+    ) {
+      throw new ForbiddenException(
+        'Turma pertence a outro professor ou unidade.',
+      );
+    }
+  }
+
+  private assertCourseManageable(
+    course: Pick<CourseDocument, 'createdBy'>,
+    actor?: AuthUser,
+  ) {
+    if (!actor) return;
+    if (
+      actor.role === Role.Professor &&
+      !actorHasPermission(actor, Permission.CoursesManage) &&
+      String(course.createdBy) !== actor.id
+    ) {
+      throw new ForbiddenException('Curso pertence a outro autor.');
+    }
   }
 
   private async progressFor(cohortId: Types.ObjectId, actor: AuthUser) {
@@ -473,12 +705,11 @@ export class CoursesService {
       .find({ cohortId })
       .select('attendance');
     if (!lessons.length) return { completed: 0, total: 0, percent: 0 };
-    if (actor.role !== Role.Student) {
-      return { completed: 0, total: lessons.length, percent: 0 };
-    }
     const completed = lessons.filter((lesson) =>
-      lesson.attendance.some(
-        (item) => String(item.studentId) === actor.id && item.present,
+      lesson.attendance.some((item) =>
+        actor.role === Role.Student
+          ? String(item.studentId) === actor.id && item.present
+          : item.present,
       ),
     ).length;
     return {

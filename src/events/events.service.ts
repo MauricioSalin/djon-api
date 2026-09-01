@@ -6,7 +6,9 @@ import {
 import { InjectModel } from '@nestjs/mongoose';
 import { Model, Types } from 'mongoose';
 import { Role } from '../common/enums/role.enum';
+import { Permission } from '../common/enums/permission.enum';
 import { AuthUser } from '../common/interfaces/auth-user.interface';
+import { actorHasPermission } from '../common/permissions';
 import { NotificationsService } from '../notifications/notifications.service';
 import { UsersService } from '../users/users.service';
 import { CreateEventDto } from './dto/create-event.dto';
@@ -23,12 +25,11 @@ export class EventsService {
   ) {}
 
   async create(dto: CreateEventDto, actor: AuthUser) {
-    const type =
-      actor.role === Role.Admin
-        ? (dto.type ?? EventType.DjOn)
-        : actor.role === Role.Professor
-          ? EventType.Professor
-          : EventType.Student;
+    const type = actorHasPermission(actor, Permission.EventsManage)
+      ? (dto.type ?? EventType.DjOn)
+      : actor.role === Role.Professor
+        ? EventType.Professor
+        : EventType.Student;
     const event = await this.eventModel.create({
       ...dto,
       instagram: this.normalizeHandle(dto.instagram),
@@ -97,7 +98,7 @@ export class EventsService {
       ...dto,
       instagram: this.normalizeHandle(dto.instagram),
     };
-    if (actor.role !== Role.Admin) delete update.type;
+    if (!actorHasPermission(actor, Permission.EventsManage)) delete update.type;
     Object.assign(event, update);
     await event.save();
     return this.findOne(id);
@@ -112,7 +113,10 @@ export class EventsService {
   private async getOwned(id: string, actor: AuthUser) {
     const event = await this.eventModel.findById(id).exec();
     if (!event) throw new NotFoundException('Evento não encontrado.');
-    if (actor.role !== Role.Admin && String(event.authorId) !== actor.id) {
+    if (
+      !actorHasPermission(actor, Permission.EventsManage) &&
+      String(event.authorId) !== actor.id
+    ) {
       throw new ForbiddenException('Evento pertence a outro usuário.');
     }
     return event;

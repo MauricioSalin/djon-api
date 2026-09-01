@@ -42,7 +42,7 @@ describe('PermissionsGuard', () => {
 
   it('mantém administradores como superusuários', () => {
     const admin = { ...actor, role: Role.Admin, permissions: [] };
-    const { guard, context } = setup([Permission.AuditRead], admin);
+    const { guard, context } = setup([Permission.BookingsManage], admin);
     expect(guard.canActivate(context)).toBe(true);
   });
 });

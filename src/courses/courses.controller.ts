@@ -10,15 +10,14 @@ import {
 } from '@nestjs/common';
 import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
 import { CurrentUser } from '../common/decorators/current-user.decorator';
-import { Permissions } from '../common/decorators/permissions.decorator';
 import { Roles } from '../common/decorators/roles.decorator';
-import { Permission } from '../common/enums/permission.enum';
 import { Role } from '../common/enums/role.enum';
 import type { AuthUser } from '../common/interfaces/auth-user.interface';
 import {
   ConfigureCohortLessonsDto,
   CreateCohortDto,
   CreateCohortWithLessonsDto,
+  UpdateCohortDto,
   UpdateAttendanceDto,
 } from './dto/cohort.dto';
 import { CreateCourseDto, UpdateCourseDto } from './dto/course.dto';
@@ -39,21 +38,25 @@ export class CoursesController {
   }
 
   @Post()
-  @Permissions(Permission.CoursesManage)
+  @Roles(Role.Admin, Role.Professor)
   createCourse(@Body() dto: CreateCourseDto, @CurrentUser() actor: AuthUser) {
     return this.coursesService.createCourse(dto, actor);
   }
 
   @Patch(':id')
-  @Permissions(Permission.CoursesManage)
-  updateCourse(@Param('id') id: string, @Body() dto: UpdateCourseDto) {
-    return this.coursesService.updateCourse(id, dto);
+  @Roles(Role.Admin, Role.Professor)
+  updateCourse(
+    @Param('id') id: string,
+    @Body() dto: UpdateCourseDto,
+    @CurrentUser() actor: AuthUser,
+  ) {
+    return this.coursesService.updateCourse(id, dto, actor);
   }
 
   @Delete(':id')
-  @Permissions(Permission.CoursesManage)
-  deleteCourse(@Param('id') id: string) {
-    return this.coursesService.deleteCourse(id);
+  @Roles(Role.Admin, Role.Professor)
+  deleteCourse(@Param('id') id: string, @CurrentUser() actor: AuthUser) {
+    return this.coursesService.deleteCourse(id, actor);
   }
 
   @Get('cohorts')
@@ -79,6 +82,39 @@ export class CoursesController {
   @Get('cohorts/:id')
   findCohort(@Param('id') id: string, @CurrentUser() actor: AuthUser) {
     return this.coursesService.findOneCohort(id, actor);
+  }
+
+  @Patch('cohorts/:id')
+  @Roles(Role.Admin, Role.Professor)
+  updateCohort(
+    @Param('id') id: string,
+    @Body() dto: UpdateCohortDto,
+    @CurrentUser() actor: AuthUser,
+  ) {
+    return this.coursesService.updateCohort(id, dto, actor);
+  }
+
+  @Delete('cohorts/:id')
+  @Roles(Role.Admin, Role.Professor)
+  deleteCohort(@Param('id') id: string, @CurrentUser() actor: AuthUser) {
+    return this.coursesService.deleteCohort(id, actor);
+  }
+
+  @Get('students/:studentId/observations')
+  @Roles(Role.Admin, Role.Professor)
+  findStudentObservations(
+    @Param('studentId') studentId: string,
+    @CurrentUser() actor: AuthUser,
+  ) {
+    return this.coursesService.findStudentObservations(studentId, actor);
+  }
+
+  @Get('students/:studentId/progress')
+  findStudentCourseProgress(
+    @Param('studentId') studentId: string,
+    @CurrentUser() actor: AuthUser,
+  ) {
+    return this.coursesService.findStudentCourseProgress(studentId, actor);
   }
 
   @Post('cohorts/:id/lessons')

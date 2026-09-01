@@ -18,6 +18,8 @@ import { HealthModule } from './health/health.module';
 import { LeadsModule } from './leads/leads.module';
 import { MaterialsModule } from './materials/materials.module';
 import { NotificationsModule } from './notifications/notifications.module';
+import { PortalContentModule } from './portal-content/portal-content.module';
+import { LandingContentModule } from './landing-content/landing-content.module';
 import { SearchModule } from './search/search.module';
 import { UnitsModule } from './units/units.module';
 import { UsersModule } from './users/users.module';
@@ -44,6 +46,8 @@ import { CoursesModule } from './courses/courses.module';
     UnitsModule,
     EquipmentsModule,
     NotificationsModule,
+    PortalContentModule,
+    LandingContentModule,
     BookingsModule,
     EventsModule,
     MaterialsModule,

@@ -70,6 +70,13 @@ export class UnitsService {
     return this.unitModel.findOne({ _id: id, active: true }).lean().exec();
   }
 
+  async findActiveByKey(key?: string) {
+    if (!key?.trim()) return this.findDefault();
+    return this.unitModel
+      .findOne({ key: key.toLowerCase().trim(), active: true })
+      .exec();
+  }
+
   private handleDuplicate(error: unknown) {
     if (
       typeof error === 'object' &&

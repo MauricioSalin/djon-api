@@ -15,8 +15,9 @@ import { InjectModel } from '@nestjs/mongoose';
 import { randomUUID } from 'node:crypto';
 import { Readable } from 'node:stream';
 import { Model, Types } from 'mongoose';
-import { Role } from '../common/enums/role.enum';
+import { Permission } from '../common/enums/permission.enum';
 import { AuthUser } from '../common/interfaces/auth-user.interface';
+import { actorHasPermission } from '../common/permissions';
 import { fileLimitForPurpose, MEGABYTE } from './files.constants';
 import { StoredFile, StoredFileDocument } from './schemas/stored-file.schema';
 
@@ -25,6 +26,8 @@ const PURPOSES = new Set([
   'banner',
   'latest-release-cover',
   'material-cover',
+  'portal-banner',
+  'site-image',
   'material-attachment',
   'rich-text',
   'other',
@@ -35,6 +38,8 @@ const IMAGE_PURPOSES = new Set([
   'banner',
   'latest-release-cover',
   'material-cover',
+  'portal-banner',
+  'site-image',
   'rich-text',
 ]);
 
@@ -73,8 +78,20 @@ export class FilesService {
     if (!PURPOSES.has(purpose)) {
       throw new BadRequestException('Finalidade de arquivo inválida.');
     }
+    if (
+      (purpose === 'portal-banner' &&
+        !actorHasPermission(actor, Permission.PortalEdit)) ||
+      (purpose === 'site-image' &&
+        !actorHasPermission(actor, Permission.SiteEdit))
+    ) {
+      throw new ForbiddenException(
+        purpose === 'site-image'
+          ? 'Você não tem permissão para editar o site principal.'
+          : 'Você não tem permissão para editar o portal.',
+      );
+    }
     const fileLimit = fileLimitForPurpose(purpose);
-    if (file.size > fileLimit) {
+    if (fileLimit !== undefined && file.size > fileLimit) {
       throw new BadRequestException(
         `O arquivo excede o limite de ${fileLimit / MEGABYTE} MB.`,
       );
@@ -141,7 +158,10 @@ export class FilesService {
   async remove(id: string, actor: AuthUser) {
     const file = await this.fileModel.findById(id).exec();
     if (!file) throw new NotFoundException('Arquivo não encontrado.');
-    if (actor.role !== Role.Admin && String(file.uploadedBy) !== actor.id) {
+    if (
+      !actorHasPermission(actor, Permission.MaterialsManage) &&
+      String(file.uploadedBy) !== actor.id
+    ) {
       throw new ForbiddenException('Arquivo pertence a outro usuário.');
     }
     await this.client.send(

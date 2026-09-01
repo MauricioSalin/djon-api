@@ -42,6 +42,26 @@ const allowedMimeTypes = new Set([
 export class FilesController {
   constructor(private readonly filesService: FilesService) {}
 
+  @Post('rich-text')
+  @ApiConsumes('multipart/form-data')
+  @UseInterceptors(
+    FileInterceptor('file', {
+      fileFilter: (_request, file, callback) =>
+        callback(
+          allowedMimeTypes.has(file.mimetype)
+            ? null
+            : new BadRequestException('Tipo de arquivo não permitido.'),
+          allowedMimeTypes.has(file.mimetype),
+        ),
+    }),
+  )
+  uploadRichText(
+    @UploadedFile() file: Express.Multer.File,
+    @CurrentUser() actor: AuthUser,
+  ) {
+    return this.filesService.upload(file, actor, 'rich-text');
+  }
+
   @Post()
   @ApiConsumes('multipart/form-data')
   @UseInterceptors(

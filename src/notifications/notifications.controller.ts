@@ -11,8 +11,8 @@ import {
 } from '@nestjs/common';
 import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
 import { CurrentUser } from '../common/decorators/current-user.decorator';
-import { Roles } from '../common/decorators/roles.decorator';
-import { Role } from '../common/enums/role.enum';
+import { Permissions } from '../common/decorators/permissions.decorator';
+import { Permission } from '../common/enums/permission.enum';
 import type { AuthUser } from '../common/interfaces/auth-user.interface';
 import { CreateNotificationDto } from './dto/create-notification.dto';
 import { PushSubscriptionDto } from './dto/push-subscription.dto';
@@ -38,7 +38,7 @@ export class NotificationsController {
   }
 
   @Post()
-  @Roles(Role.Admin)
+  @Permissions(Permission.NotificationsManage)
   create(@Body() dto: CreateNotificationDto) {
     return this.notificationsService.create(dto);
   }

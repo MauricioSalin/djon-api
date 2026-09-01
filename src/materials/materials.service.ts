@@ -11,7 +11,9 @@ import { Course, CourseDocument } from '../courses/schemas/course.schema';
 import { Lesson, LessonDocument } from '../courses/schemas/lesson.schema';
 import sanitizeHtml from 'sanitize-html';
 import { Role } from '../common/enums/role.enum';
+import { Permission } from '../common/enums/permission.enum';
 import { AuthUser } from '../common/interfaces/auth-user.interface';
+import { actorHasPermission } from '../common/permissions';
 import { FilesService } from '../files/files.service';
 import { NotificationsService } from '../notifications/notifications.service';
 import { UsersService } from '../users/users.service';
@@ -147,7 +149,7 @@ export class MaterialsService {
   }
 
   async update(id: string, dto: UpdateMaterialDto, actor: AuthUser) {
-    const material = await this.getOwned(id, actor);
+    const material = await this.getOwned(id, actor, true);
     const previousStatus = material.status ?? MaterialStatus.Published;
     const nextStatus = dto.status ?? previousStatus;
     const nextTitle = dto.title ?? material.title;
@@ -200,7 +202,7 @@ export class MaterialsService {
   }
 
   async remove(id: string, actor: AuthUser) {
-    const material = await this.getOwned(id, actor);
+    const material = await this.getOwned(id, actor, true);
     const fileIds = this.filesService.extractFileIds([
       material.coverImage,
       material.body,
@@ -279,14 +281,24 @@ export class MaterialsService {
     return { id, removed: true, transferredMaterials: count };
   }
 
-  private async getOwned(id: string, actor: AuthUser) {
+  private async getOwned(
+    id: string,
+    actor: AuthUser,
+    allowCourseProfessor = false,
+  ) {
     const material = await this.materialModel.findById(id);
     if (!material) throw new NotFoundException('Material não encontrado.');
     const isOwner = String(material.authorId) === actor.id;
-    if (
-      (!isOwner && actor.role !== Role.Admin) ||
-      (!isOwner && material.status === MaterialStatus.Draft)
-    ) {
+    const canManageAll = actorHasPermission(actor, Permission.MaterialsManage);
+    if (!isOwner && material.status === MaterialStatus.Draft) {
+      throw new ForbiddenException('Rascunho pertence a outro autor.');
+    }
+    const canEditCourseMaterial = Boolean(
+      allowCourseProfessor &&
+      material.courseId &&
+      actor.role === Role.Professor,
+    );
+    if (!isOwner && !canManageAll && !canEditCourseMaterial) {
       throw new ForbiddenException('Material pertence a outro autor.');
     }
     return material;

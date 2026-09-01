@@ -19,8 +19,11 @@ export class Lead {
   @Prop({ trim: true, maxlength: 100 })
   lastName?: string;
 
-  @Prop({ required: true, lowercase: true, trim: true, index: true })
-  email!: string;
+  @Prop({ lowercase: true, trim: true, index: true })
+  email?: string;
+
+  @Prop({ required: true, trim: true, maxlength: 11, index: true })
+  whatsapp!: string;
 
   @Prop({ maxlength: 3000 })
   message?: string;

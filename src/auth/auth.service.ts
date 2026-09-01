@@ -2,6 +2,8 @@ import { Injectable } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
 import { UsersService } from '../users/users.service';
 import { LoginDto } from './dto/login.dto';
+import { RequestPasswordResetDto } from './dto/request-password-reset.dto';
+import { ResetPasswordDto } from './dto/reset-password.dto';
 
 @Injectable()
 export class AuthService {
@@ -35,5 +37,18 @@ export class AuthService {
         permissions: user.permissions ?? [],
       },
     };
+  }
+
+  async requestPasswordReset(dto: RequestPasswordResetDto) {
+    await this.usersService.requestPasswordReset(dto.email);
+    return {
+      message:
+        'Se o e-mail estiver cadastrado, você receberá um link para redefinir sua senha.',
+    };
+  }
+
+  async resetPassword(dto: ResetPasswordDto) {
+    await this.usersService.resetPassword(dto.token, dto.newPassword);
+    return { message: 'Senha redefinida com sucesso.' };
   }
 }

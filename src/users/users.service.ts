@@ -8,7 +8,7 @@ import {
 } from '@nestjs/common';
 import { InjectModel } from '@nestjs/mongoose';
 import { compare, hash } from 'bcryptjs';
-import { randomBytes } from 'node:crypto';
+import { createHash, randomBytes } from 'node:crypto';
 import { Model, Types } from 'mongoose';
 import { Role } from '../common/enums/role.enum';
 import { Permission } from '../common/enums/permission.enum';
@@ -23,6 +23,8 @@ import { QueryUsersDto } from './dto/query-users.dto';
 import { UpdateMeDto } from './dto/update-me.dto';
 import { UpdateUserDto } from './dto/update-user.dto';
 import { User, UserDocument } from './schemas/user.schema';
+
+const DELETED_PROFESSOR_REASSIGN_EMAIL = 'devito@djonacademy.com';
 
 @Injectable()
 export class UsersService {
@@ -50,7 +52,9 @@ export class UsersService {
     ) {
       throw new ForbiddenException('Professor só pode cadastrar alunos.');
     }
-    if (!dto.password && !(actor && dto.role === Role.Student)) {
+    const managedPortalUser =
+      Boolean(actor) && [Role.Student, Role.Professor].includes(dto.role);
+    if (!dto.password && !managedPortalUser) {
       throw new BadRequestException('Senha é obrigatória para este usuário.');
     }
     await this.validateManagedUserUnit(dto.role, dto.unitId);
@@ -64,15 +68,16 @@ export class UsersService {
             : undefined,
         email: dto.email.toLowerCase().trim(),
         passwordHash: await hash(temporaryPassword, 12),
-        passwordChangeRequired: Boolean(actor && dto.role === Role.Student),
+        passwordChangeRequired: managedPortalUser,
       });
-      if (actor && dto.role === Role.Student) {
+      if (managedPortalUser) {
         try {
           await this.mailService.sendTemporaryPassword({
             userId: String(user.id),
             name: user.name,
             email: user.email,
             temporaryPassword,
+            role: dto.role as Role.Student | Role.Professor,
           });
         } catch (error) {
           await user.deleteOne();
@@ -230,7 +235,7 @@ export class UsersService {
     return this.updateDocument(
       id,
       update,
-      actor.role === Role.Admin ? '+cpf +trainingHoursLimit' : '+cpf',
+      delegatedUserManager ? '+cpf +trainingHoursLimit' : '+cpf',
     );
   }
 
@@ -257,6 +262,247 @@ export class UsersService {
     return { id, active: false };
   }
 
+  async permanentlyDeleteUser(id: string) {
+    this.ensureObjectId(id);
+    const target = await this.userModel.findById(id).exec();
+    if (!target) throw new NotFoundException('Usuário não encontrado.');
+    if (![Role.Student, Role.Professor].includes(target.role)) {
+      throw new BadRequestException(
+        'A exclusão permanente está disponível apenas para alunos e professores.',
+      );
+    }
+
+    const objectId = new Types.ObjectId(id);
+    if (target.role === Role.Professor) {
+      return this.permanentlyDeleteProfessor(objectId);
+    }
+
+    const references: Array<[string, Record<string, unknown>]> = [
+      [
+        'bookings',
+        {
+          $or: [
+            { studentId: objectId },
+            { studentIds: objectId },
+            { professorId: objectId },
+            { requestedBy: objectId },
+            { 'statusHistory.changedBy': objectId },
+          ],
+        },
+      ],
+      [
+        'cohorts',
+        {
+          $or: [{ professorId: objectId }, { studentIds: objectId }],
+        },
+      ],
+      [
+        'lessons',
+        {
+          $or: [
+            { 'attendance.studentId': objectId },
+            { 'attendance.markedBy': objectId },
+          ],
+        },
+      ],
+      ['events', { authorId: objectId }],
+      ['materials', { authorId: objectId }],
+      ['courses', { createdBy: objectId }],
+      ['storedfiles', { uploadedBy: objectId }],
+      ['leads', { assignedTo: objectId }],
+    ];
+    const linkedRecords = await Promise.all(
+      references.map(([collection, filter]) =>
+        this.userModel.db.collection(collection).findOne(filter, {
+          projection: { _id: 1 },
+        }),
+      ),
+    );
+    if (linkedRecords.some(Boolean)) {
+      throw new BadRequestException(
+        'Este usuário possui histórico vinculado e não pode ser excluído. Desative o acesso para preservar os registros.',
+      );
+    }
+
+    await Promise.all([
+      this.userModel.db
+        .collection('notifications')
+        .deleteMany({ recipientId: objectId }),
+      this.userModel.db
+        .collection('pushsubscriptions')
+        .deleteMany({ userId: objectId }),
+    ]);
+    const result = await this.userModel.deleteOne({ _id: objectId }).exec();
+    if (!result.deletedCount) {
+      throw new NotFoundException('Usuário não encontrado.');
+    }
+    return { id, deleted: true };
+  }
+
+  private async permanentlyDeleteProfessor(objectId: Types.ObjectId) {
+    const replacement = await this.userModel.db.collection('users').findOne(
+      {
+        email: DELETED_PROFESSOR_REASSIGN_EMAIL,
+        role: Role.Professor,
+        active: true,
+      },
+      { projection: { _id: 1, name: 1, email: 1 } },
+    );
+    if (!replacement) {
+      throw new BadRequestException(
+        'O professor Devito precisa estar ativo para receber os registros vinculados.',
+      );
+    }
+    if (replacement._id.equals(objectId)) {
+      throw new BadRequestException(
+        'O professor Devito é o responsável padrão e não pode ser excluído.',
+      );
+    }
+
+    const replacementId = replacement._id;
+    const sourceProfessorToken = `professor:${objectId.toHexString()}`;
+    const replacementProfessorToken = `professor:${replacementId.toHexString()}`;
+    const bookings = this.userModel.db.collection('bookings');
+    const sourceBookings = await bookings
+      .find(
+        { professorId: objectId, activeProfessorSlotKeys: { $exists: true } },
+        { projection: { activeProfessorSlotKeys: 1 } },
+      )
+      .toArray();
+    const reassignedSlotKeys = sourceBookings.flatMap((booking) =>
+      Array.isArray(booking.activeProfessorSlotKeys)
+        ? booking.activeProfessorSlotKeys.map((key) =>
+            String(key).replace(
+              sourceProfessorToken,
+              replacementProfessorToken,
+            ),
+          )
+        : [],
+    );
+    if (reassignedSlotKeys.length) {
+      const conflict = await bookings.findOne(
+        {
+          professorId: replacementId,
+          activeProfessorSlotKeys: { $in: reassignedSlotKeys },
+        },
+        { projection: { _id: 1 } },
+      );
+      if (conflict) {
+        throw new BadRequestException(
+          'Não foi possível transferir os agendamentos para o Devito porque existem horários em conflito.',
+        );
+      }
+    }
+
+    await bookings.updateMany({ professorId: objectId }, [
+      {
+        $set: {
+          professorId: replacementId,
+          resourceKey: {
+            $replaceAll: {
+              input: '$resourceKey',
+              find: sourceProfessorToken,
+              replacement: replacementProfessorToken,
+            },
+          },
+          activeSlotKey: {
+            $cond: [
+              { $eq: [{ $type: '$activeSlotKey' }, 'string'] },
+              {
+                $replaceAll: {
+                  input: '$activeSlotKey',
+                  find: sourceProfessorToken,
+                  replacement: replacementProfessorToken,
+                },
+              },
+              '$$REMOVE',
+            ],
+          },
+          activeProfessorSlotKeys: {
+            $cond: [
+              { $isArray: '$activeProfessorSlotKeys' },
+              {
+                $map: {
+                  input: '$activeProfessorSlotKeys',
+                  as: 'slotKey',
+                  in: {
+                    $replaceAll: {
+                      input: '$$slotKey',
+                      find: sourceProfessorToken,
+                      replacement: replacementProfessorToken,
+                    },
+                  },
+                },
+              },
+              '$$REMOVE',
+            ],
+          },
+        },
+      },
+    ]);
+
+    const reassignmentOperations = [
+      bookings.updateMany(
+        { requestedBy: objectId },
+        { $set: { requestedBy: replacementId } },
+      ),
+      bookings.updateMany(
+        { 'statusHistory.changedBy': objectId },
+        { $set: { 'statusHistory.$[entry].changedBy': replacementId } },
+        { arrayFilters: [{ 'entry.changedBy': objectId }] },
+      ),
+      this.userModel.db
+        .collection('cohorts')
+        .updateMany(
+          { professorId: objectId },
+          { $set: { professorId: replacementId } },
+        ),
+      this.userModel.db
+        .collection('lessons')
+        .updateMany(
+          { 'attendance.markedBy': objectId },
+          { $set: { 'attendance.$[entry].markedBy': replacementId } },
+          { arrayFilters: [{ 'entry.markedBy': objectId }] },
+        ),
+      ...[
+        ['events', 'authorId'],
+        ['materials', 'authorId'],
+        ['courses', 'createdBy'],
+        ['storedfiles', 'uploadedBy'],
+        ['leads', 'assignedTo'],
+      ].map(([collection, field]) =>
+        this.userModel.db
+          .collection(collection)
+          .updateMany(
+            { [field]: objectId },
+            { $set: { [field]: replacementId } },
+          ),
+      ),
+      this.userModel.db
+        .collection('auditlogs')
+        .updateMany({ actorId: objectId }, { $unset: { actorId: '' } }),
+    ];
+    await Promise.all(reassignmentOperations);
+    await Promise.all([
+      this.userModel.db
+        .collection('notifications')
+        .deleteMany({ recipientId: objectId }),
+      this.userModel.db
+        .collection('pushsubscriptions')
+        .deleteMany({ userId: objectId }),
+    ]);
+
+    const result = await this.userModel.deleteOne({ _id: objectId }).exec();
+    if (!result.deletedCount) {
+      throw new NotFoundException('Usuário não encontrado.');
+    }
+    return {
+      id: objectId.toHexString(),
+      deleted: true,
+      reassignedTo: replacementId.toHexString(),
+    };
+  }
+
   async restore(id: string, actor: AuthUser) {
     this.ensureObjectId(id);
     const target = await this.userModel.findById(id).exec();
@@ -277,12 +523,26 @@ export class UsersService {
     return user;
   }
 
-  async updatePermissions(id: string, permissions: Permission[]) {
+  async updatePermissions(
+    id: string,
+    permissions: Permission[],
+    actor?: AuthUser,
+  ) {
     this.ensureObjectId(id);
+    if (actor?.role === Role.Professor && actor.id === id) {
+      throw new ForbiddenException(
+        'Professores não podem alterar os próprios privilégios.',
+      );
+    }
+    const normalizedPermissions = permissions.includes(
+      Permission.PermissionsManage,
+    )
+      ? [...new Set([...permissions, Permission.UsersManage])]
+      : permissions;
     const user = await this.userModel
       .findOneAndUpdate(
         { _id: id, role: Role.Professor },
-        { permissions },
+        { permissions: normalizedPermissions },
         { returnDocument: 'after', runValidators: true },
       )
       .select('+permissions')
@@ -319,16 +579,63 @@ export class UsersService {
     return user;
   }
 
+  async requestPasswordReset(email: string) {
+    const user = await this.userModel
+      .findOne({ email: email.toLowerCase().trim(), active: true })
+      .exec();
+    if (!user) return;
+
+    const token = randomBytes(32).toString('base64url');
+    user.passwordResetTokenHash = this.hashResetToken(token);
+    user.passwordResetExpiresAt = new Date(Date.now() + 60 * 60 * 1000);
+    await user.save();
+    try {
+      await this.mailService.sendPasswordReset({
+        userId: String(user.id),
+        name: user.name,
+        email: user.email,
+        token,
+      });
+    } catch (error) {
+      user.passwordResetTokenHash = undefined;
+      user.passwordResetExpiresAt = undefined;
+      await user.save();
+      throw error;
+    }
+  }
+
+  async resetPassword(token: string, newPassword: string) {
+    const user = await this.userModel
+      .findOne({
+        passwordResetTokenHash: this.hashResetToken(token),
+        passwordResetExpiresAt: { $gt: new Date() },
+        active: true,
+      })
+      .select('+passwordHash +passwordResetTokenHash +passwordResetExpiresAt')
+      .exec();
+    if (!user) {
+      throw new BadRequestException(
+        'Link de recuperação inválido ou expirado. Solicite um novo link.',
+      );
+    }
+    user.passwordHash = await hash(newPassword, 12);
+    user.passwordChangeRequired = false;
+    user.passwordResetTokenHash = undefined;
+    user.passwordResetExpiresAt = undefined;
+    await user.save();
+  }
+
   async findActiveAuthUser(id: string): Promise<AuthUser> {
     this.ensureObjectId(id);
     const user = await this.userModel
       .findOne({ _id: id, active: true })
-      .select('email role unitId +permissions')
+      .select('name email role unitId +permissions')
       .lean()
       .exec();
     if (!user) throw new UnauthorizedException('Sessão sem usuário ativo.');
     return {
       id,
+      name: user.name,
       email: user.email,
       role: user.role,
       unitId: user.unitId?.toString(),
@@ -344,7 +651,7 @@ export class UsersService {
       .exec();
   }
 
-  async findActiveReviewers() {
+  async findActiveReviewers(unitId?: string) {
     return this.userModel
       .find({
         active: true,
@@ -352,7 +659,7 @@ export class UsersService {
           { role: Role.Admin },
           {
             role: Role.Professor,
-            permissions: Permission.BookingsReview,
+            ...(unitId ? { unitId: new Types.ObjectId(unitId) } : {}),
           },
         ],
       })
@@ -456,5 +763,9 @@ export class UsersService {
 
   private generateTemporaryPassword() {
     return `DjOn!${randomBytes(7).toString('base64url')}9a`;
+  }
+
+  private hashResetToken(token: string) {
+    return createHash('sha256').update(token).digest('hex');
   }
 }
