@@ -1,4 +1,4 @@
-import { IsString, IsUrl } from 'class-validator';
+import { IsBoolean, IsOptional, IsString, IsUrl } from 'class-validator';
 
 export class PushSubscriptionDto {
   @IsUrl({ require_tld: false })
@@ -9,4 +9,8 @@ export class PushSubscriptionDto {
 
   @IsString()
   auth!: string;
+
+  @IsOptional()
+  @IsBoolean()
+  confirmActivation?: boolean;
 }

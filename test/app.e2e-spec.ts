@@ -4,6 +4,7 @@ import { Test } from '@nestjs/testing';
 import { Connection } from 'mongoose';
 import { MongoMemoryServer } from 'mongodb-memory-server';
 import request from 'supertest';
+import * as webPush from 'web-push';
 import { AuthService } from '../src/auth/auth.service';
 import { BookingType } from '../src/bookings/schemas/booking.schema';
 import { Role } from '../src/common/enums/role.enum';
@@ -14,6 +15,11 @@ import { EquipmentsService } from '../src/equipments/equipments.service';
 import { UnitsService } from '../src/units/units.service';
 import { UsersService } from '../src/users/users.service';
 import { MailService } from '../src/mail/mail.service';
+
+jest.mock('web-push', () => ({
+  setVapidDetails: jest.fn(),
+  sendNotification: jest.fn().mockResolvedValue({ statusCode: 201 }),
+}));
 
 jest.mock('../src/units/unit-map-links', () => ({
   generateUnitMapLinks: jest.fn(() =>
@@ -63,6 +69,8 @@ describe('DJ ON API (e2e)', () => {
     process.env.API_PREFIX = 'api/v1';
     process.env.SEED_DEFAULT_PASSWORD = password;
     process.env.AUDIT_ALLOWED_EMAILS = 'admin@teste.com';
+    process.env.WEB_PUSH_PUBLIC_KEY = 'e2e-public-key';
+    process.env.WEB_PUSH_PRIVATE_KEY = 'e2e-private-key';
 
     const { AppModule } =
       jest.requireActual<typeof import('../src/app.module')>(
@@ -920,6 +928,91 @@ describe('DJ ON API (e2e)', () => {
       .delete('/api/v1/notifications/push-subscriptions')
       .set('Authorization', `Bearer ${tokens[Role.Student]}`)
       .send({ endpoint })
+      .expect(200);
+  });
+
+  it('confirma a ativação push no portal e no dispositivo sem repetir na sincronização', async () => {
+    const payload = {
+      endpoint: 'https://web.push.apple.com/e2e-activation',
+      p256dh: 'e2e-p256dh',
+      auth: 'e2e-auth',
+    };
+    const sendPush = jest.mocked(webPush.sendNotification);
+    sendPush.mockClear();
+
+    await request(app.getHttpServer())
+      .post('/api/v1/notifications/push-subscriptions')
+      .send({ ...payload, confirmActivation: true })
+      .expect(401);
+    await request(app.getHttpServer())
+      .post('/api/v1/notifications/push-subscriptions')
+      .set('Authorization', `Bearer ${tokens[Role.Student]}`)
+      .send({ ...payload, confirmActivation: 'true' })
+      .expect(400);
+    await request(app.getHttpServer())
+      .post('/api/v1/notifications/push-subscriptions')
+      .set('Authorization', `Bearer ${tokens[Role.Student]}`)
+      .send(payload)
+      .expect(201);
+    expect(sendPush).not.toHaveBeenCalled();
+    expect(
+      await connection
+        .collection('notifications')
+        .countDocuments({ type: 'push.activated' }),
+    ).toBe(0);
+
+    for (const confirmActivation of [true, true, false]) {
+      await request(app.getHttpServer())
+        .post('/api/v1/notifications/push-subscriptions')
+        .set('Authorization', `Bearer ${tokens[Role.Student]}`)
+        .send({ ...payload, confirmActivation })
+        .expect(201);
+    }
+
+    const response = await request(app.getHttpServer())
+      .get('/api/v1/notifications')
+      .set('Authorization', `Bearer ${tokens[Role.Student]}`)
+      .expect(200);
+    const notices = (
+      response.body as Array<{
+        type: string;
+        title: string;
+        body: string;
+        url: string;
+      }>
+    ).filter((notice) => notice.type === 'push.activated');
+    expect(notices).toHaveLength(1);
+    expect(notices[0]).toMatchObject({
+      title: 'Notificações push ativadas',
+      body: 'Pronto! Agora você pode receber notificações push do DJ ON neste dispositivo.',
+      url: '/dashboard/notificacoes',
+    });
+    expect(sendPush).toHaveBeenCalledTimes(1);
+    expect(sendPush).toHaveBeenCalledWith(
+      {
+        endpoint: payload.endpoint,
+        keys: { p256dh: payload.p256dh, auth: payload.auth },
+      },
+      JSON.stringify({
+        title: notices[0].title,
+        body: notices[0].body,
+        url: notices[0].url,
+      }),
+    );
+    const otherUser = await request(app.getHttpServer())
+      .get('/api/v1/notifications')
+      .set('Authorization', `Bearer ${secondStudentToken}`)
+      .expect(200);
+    expect(
+      (otherUser.body as Array<{ type: string }>).some(
+        (notice) => notice.type === 'push.activated',
+      ),
+    ).toBe(false);
+
+    await request(app.getHttpServer())
+      .delete('/api/v1/notifications/push-subscriptions')
+      .set('Authorization', `Bearer ${tokens[Role.Student]}`)
+      .send({ endpoint: payload.endpoint })
       .expect(200);
   });
 

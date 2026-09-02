@@ -160,8 +160,12 @@ export class NotificationsService {
     return { id, removed: true };
   }
 
-  subscribe(userId: string, dto: PushSubscriptionDto, userAgent?: string) {
-    return this.subscriptionModel.findOneAndUpdate(
+  async subscribe(
+    userId: string,
+    dto: PushSubscriptionDto,
+    userAgent?: string,
+  ) {
+    const subscription = await this.subscriptionModel.findOneAndUpdate(
       { endpoint: dto.endpoint },
       {
         userId: new Types.ObjectId(userId),
@@ -172,6 +176,21 @@ export class NotificationsService {
       },
       { upsert: true, returnDocument: 'after', runValidators: true },
     );
+    if (dto.confirmActivation && subscription) {
+      // Persist first so the newly enabled device receives this same message.
+      // Silent subscription syncs must never create another activation notice.
+      await this.createForRecipientsOnce(
+        [userId],
+        {
+          type: 'push.activated',
+          title: 'Notificações push ativadas',
+          body: 'Pronto! Agora você pode receber notificações push do DJ ON neste dispositivo.',
+          url: '/dashboard/notificacoes',
+        },
+        `push-activated:${String(subscription._id)}`,
+      );
+    }
+    return subscription;
   }
 
   async unsubscribe(userId: string, endpoint: string) {
