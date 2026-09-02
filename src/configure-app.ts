@@ -19,7 +19,14 @@ export function configureApp(app: INestApplication) {
 
   app.setGlobalPrefix(prefix);
   app.use(helmet());
-  app.use(compression());
+  app.use(
+    compression({
+      filter: (request, response) =>
+        request.path.endsWith('/sync/stream')
+          ? false
+          : compression.filter(request, response),
+    }),
+  );
   app.enableCors({
     credentials: true,
     origin: (

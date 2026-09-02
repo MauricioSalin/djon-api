@@ -24,6 +24,7 @@ import { SearchModule } from './search/search.module';
 import { UnitsModule } from './units/units.module';
 import { UsersModule } from './users/users.module';
 import { CoursesModule } from './courses/courses.module';
+import { SyncModule } from './sync/sync.module';
 
 @Module({
   imports: [
@@ -56,6 +57,7 @@ import { CoursesModule } from './courses/courses.module';
     LeadsModule,
     SearchModule,
     HealthModule,
+    SyncModule,
   ],
   providers: [
     { provide: APP_GUARD, useClass: ThrottlerGuard },
