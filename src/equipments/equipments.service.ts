@@ -84,13 +84,9 @@ export class EquipmentsService {
     }
   }
 
-  async deactivate(id: string) {
+  async remove(id: string) {
     this.ensureObjectId(id);
-    const equipment = await this.equipmentModel.findByIdAndUpdate(
-      id,
-      { active: false },
-      { returnDocument: 'after' },
-    );
+    const equipment = await this.equipmentModel.findByIdAndDelete(id);
     if (!equipment) throw new NotFoundException('Equipamento não encontrado.');
     return equipment;
   }

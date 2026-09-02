@@ -45,7 +45,7 @@ export class EquipmentsController {
 
   @Delete(':id')
   @Permissions(Permission.EquipmentsManage)
-  deactivate(@Param('id') id: string) {
-    return this.equipmentsService.deactivate(id);
+  remove(@Param('id') id: string) {
+    return this.equipmentsService.remove(id);
   }
 }

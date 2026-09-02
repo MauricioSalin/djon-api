@@ -1708,7 +1708,7 @@ describe('DJ ON API (e2e)', () => {
       );
   });
 
-  it('gerencia equipamentos por unidade e oculta os inativos', async () => {
+  it('gerencia e exclui equipamentos por unidade', async () => {
     const created = await request(app.getHttpServer())
       .post('/api/v1/equipments')
       .set('Authorization', `Bearer ${tokens[Role.Admin]}`)
@@ -1762,7 +1762,7 @@ describe('DJ ON API (e2e)', () => {
             (equipment: { id: string }) =>
               equipment.id === String(created.body.id),
           ),
-        ).toBe(true),
+        ).toBe(false),
       );
   });
 
