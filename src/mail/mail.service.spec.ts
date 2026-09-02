@@ -95,6 +95,10 @@ describe('MailService', () => {
     const html = renderToStaticMarkup(message.react);
     expect(message.subject).toBe('Novo contato pelo site — Porto Alegre');
     expect(html).toContain('Novo contato pelo site.');
+    expect(html).toContain('VER CONTATOS');
+    expect(html).toContain(
+      'href="https://portal.djon.test/dashboard/admin/leads"',
+    );
     expect(html).not.toContain('DJ ON ACADEMY</p>');
   });
 });

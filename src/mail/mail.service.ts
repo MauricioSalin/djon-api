@@ -113,7 +113,13 @@ export class MailService {
         from: this.from,
         to: data.unitEmail,
         subject: `Novo contato pelo site — ${data.unitName}`,
-        react: NewSiteLeadEmail(data),
+        react: NewSiteLeadEmail({
+          ...data,
+          contactsUrl: new URL(
+            '/dashboard/admin/leads',
+            this.portalUrl,
+          ).toString(),
+        }),
       },
       { idempotencyKey: `site-lead-${data.leadId}` },
     );

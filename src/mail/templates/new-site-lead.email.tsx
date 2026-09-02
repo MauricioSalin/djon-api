@@ -1,5 +1,6 @@
 import {
   Body,
+  Button,
   Container,
   Head,
   Heading,
@@ -12,6 +13,7 @@ import {
 
 type NewSiteLeadEmailProps = {
   unitName: string;
+  contactsUrl: string;
   firstName?: string;
   lastName?: string;
   whatsapp: string;
@@ -20,6 +22,7 @@ type NewSiteLeadEmailProps = {
 
 export function NewSiteLeadEmail({
   unitName,
+  contactsUrl,
   firstName,
   lastName,
   whatsapp,
@@ -44,6 +47,9 @@ export function NewSiteLeadEmail({
             <Text style={styles.label}>Mensagem</Text>
             <Text style={styles.value}>{message || 'Não informada.'}</Text>
           </Section>
+          <Button href={contactsUrl} style={styles.button}>
+            VER CONTATOS
+          </Button>
           <Hr style={styles.hr} />
           <Text style={styles.footer}>
             O contato também foi registrado no painel administrativo.
@@ -95,6 +101,18 @@ const styles = {
     lineHeight: '1.5',
     margin: '0 0 16px',
     whiteSpace: 'pre-wrap' as const,
+  },
+  button: {
+    backgroundColor: '#8af23b',
+    borderRadius: '999px',
+    color: '#000000',
+    display: 'block',
+    fontSize: '13px',
+    fontWeight: '800',
+    margin: '24px 0 28px',
+    padding: '15px 24px',
+    textAlign: 'center' as const,
+    textDecoration: 'none',
   },
   hr: { borderColor: '#333333', margin: '28px 0 20px' },
   footer: { color: '#777777', fontSize: '12px', lineHeight: '1.5' },
