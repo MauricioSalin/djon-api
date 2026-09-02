@@ -24,7 +24,6 @@ export function PasswordResetEmail({
       <Body style={styles.body}>
         <Container style={styles.container}>
           <Section style={styles.hero}>
-            <Text style={styles.eyebrow}>DJ ON ACADEMY · SEGURANÇA</Text>
             <Heading style={styles.heading}>
               Vamos criar uma nova senha.
             </Heading>
@@ -68,18 +67,12 @@ const styles = {
     overflow: 'hidden',
     padding: '0 40px 36px',
   },
-  hero: { borderTop: '6px solid #8af23b', paddingTop: '34px' },
-  eyebrow: {
-    color: '#8af23b',
-    fontSize: '12px',
-    fontWeight: '700',
-    letterSpacing: '2.5px',
-  },
+  hero: { paddingTop: '34px' },
   heading: {
     color: '#ffffff',
     fontSize: '30px',
     lineHeight: '1.15',
-    margin: '12px 0 24px',
+    margin: '0 0 24px',
   },
   text: { color: '#c7c7c7', fontSize: '15px', lineHeight: '1.65' },
   button: {

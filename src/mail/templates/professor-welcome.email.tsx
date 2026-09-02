@@ -31,7 +31,6 @@ export function ProfessorWelcomeEmail({
       <Body style={styles.body}>
         <Container style={styles.container}>
           <Section style={styles.hero}>
-            <Text style={styles.eyebrow}>DJ ON ACADEMY · PROFESSOR</Text>
             <Heading style={styles.heading}>Bem-vindo ao backstage.</Heading>
             <Text style={styles.intro}>Olá, {name}!</Text>
             <Text style={styles.text}>
@@ -42,7 +41,10 @@ export function ProfessorWelcomeEmail({
           <Section style={styles.credentials}>
             <Text style={styles.credentialsTitle}>CREDENCIAIS DE ACESSO</Text>
             <Text style={styles.label}>E-mail profissional</Text>
-            <Text style={styles.value}>{email}</Text>
+            <Text style={styles.value}>
+              <span>{email.slice(0, email.indexOf('@'))}</span>
+              <span>{email.slice(email.indexOf('@'))}</span>
+            </Text>
             <Text style={styles.label}>Senha temporária</Text>
             <Text style={styles.password}>{temporaryPassword}</Text>
           </Section>
@@ -77,18 +79,12 @@ const styles = {
     overflow: 'hidden',
     padding: '0 40px 36px',
   },
-  hero: { borderTop: '6px solid #c5b7f2', paddingTop: '34px' },
-  eyebrow: {
-    color: '#c5b7f2',
-    fontSize: '12px',
-    fontWeight: '700',
-    letterSpacing: '2.5px',
-  },
+  hero: { paddingTop: '34px' },
   heading: {
     color: '#ffffff',
     fontSize: '32px',
     lineHeight: '1.1',
-    margin: '12px 0 24px',
+    margin: '0 0 24px',
   },
   intro: {
     color: '#ffffff',

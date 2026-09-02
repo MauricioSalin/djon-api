@@ -32,7 +32,6 @@ export function NewSiteLeadEmail({
       <Preview>Novo contato recebido pelo site DJ ON</Preview>
       <Body style={styles.body}>
         <Container style={styles.container}>
-          <Text style={styles.eyebrow}>DJ ON ACADEMY</Text>
           <Heading style={styles.heading}>Novo contato pelo site.</Heading>
           <Text style={styles.text}>
             A unidade {unitName} recebeu um novo contato pela landing page.
@@ -69,17 +68,11 @@ const styles = {
     maxWidth: '560px',
     padding: '40px',
   },
-  eyebrow: {
-    color: '#b7ef3b',
-    fontSize: '12px',
-    fontWeight: '700',
-    letterSpacing: '3px',
-  },
   heading: {
     color: '#ffffff',
     fontSize: '30px',
     lineHeight: '1.1',
-    margin: '12px 0 24px',
+    margin: '0 0 24px',
   },
   text: { color: '#c8c8c8', fontSize: '15px', lineHeight: '1.6' },
   card: {

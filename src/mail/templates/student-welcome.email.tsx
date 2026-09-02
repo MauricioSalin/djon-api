@@ -31,7 +31,6 @@ export function StudentWelcomeEmail({
       <Body style={styles.body}>
         <Container style={styles.container}>
           <Section style={styles.hero}>
-            <Text style={styles.eyebrow}>DJ ON ACADEMY · ALUNO</Text>
             <Heading style={styles.heading}>
               Seu próximo set começa aqui.
             </Heading>
@@ -44,7 +43,10 @@ export function StudentWelcomeEmail({
           <Section style={styles.credentials}>
             <Text style={styles.credentialsTitle}>SEU PRIMEIRO ACESSO</Text>
             <Text style={styles.label}>E-mail</Text>
-            <Text style={styles.value}>{email}</Text>
+            <Text style={styles.value}>
+              <span>{email.slice(0, email.indexOf('@'))}</span>
+              <span>{email.slice(email.indexOf('@'))}</span>
+            </Text>
             <Text style={styles.label}>Senha temporária</Text>
             <Text style={styles.password}>{temporaryPassword}</Text>
           </Section>
@@ -79,18 +81,12 @@ const styles = {
     overflow: 'hidden',
     padding: '0 40px 36px',
   },
-  hero: { borderTop: '6px solid #8af23b', paddingTop: '34px' },
-  eyebrow: {
-    color: '#8af23b',
-    fontSize: '12px',
-    fontWeight: '700',
-    letterSpacing: '2.5px',
-  },
+  hero: { paddingTop: '34px' },
   heading: {
     color: '#ffffff',
     fontSize: '32px',
     lineHeight: '1.1',
-    margin: '12px 0 24px',
+    margin: '0 0 24px',
   },
   intro: {
     color: '#ffffff',

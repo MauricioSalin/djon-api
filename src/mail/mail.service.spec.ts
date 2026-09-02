@@ -56,6 +56,10 @@ describe('MailService', () => {
       const html = renderToStaticMarkup(message.react);
       expect(html).toContain(heading);
       expect(html).toContain('SenhaTemporaria@2026');
+      expect(html).not.toContain('border-top:6px solid');
+      expect(html).not.toContain('DJ ON ACADEMY ·');
+      expect(html).not.toContain('href="mailto:');
+      expect(html).not.toContain('>pessoa@teste.com<');
     },
   );
 
@@ -72,5 +76,25 @@ describe('MailService', () => {
     expect(message.subject).toBe('Redefina sua senha da DJ ON Academy');
     expect(html).toContain('token=token+secreto');
     expect(html).toContain('LINK VÁLIDO POR 1 HORA');
+    expect(html).not.toContain('border-top:6px solid');
+    expect(html).not.toContain('DJ ON ACADEMY · SEGURANÇA');
+  });
+
+  it('envia novo lead sem faixa ou identificador verde no topo', async () => {
+    await service.sendNewSiteLead({
+      leadId: 'lead-id',
+      unitEmail: 'unidade@teste.com',
+      unitName: 'Porto Alegre',
+      firstName: 'Pessoa',
+      lastName: 'Interessada',
+      whatsapp: '(51) 99999-9999',
+      message: 'Quero conhecer os cursos.',
+    });
+
+    const [message] = send.mock.calls[0] as unknown as [SentMessage];
+    const html = renderToStaticMarkup(message.react);
+    expect(message.subject).toBe('Novo contato pelo site — Porto Alegre');
+    expect(html).toContain('Novo contato pelo site.');
+    expect(html).not.toContain('DJ ON ACADEMY</p>');
   });
 });
