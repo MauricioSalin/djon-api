@@ -26,6 +26,7 @@ describe('generateUnitMapLinks', () => {
     expect(result.mapSrc).toContain('marker=-30.0303%2C-51.2261');
     expect(result.mapsHref).toContain('google.com/maps/search');
     expect(result.mapsHref).toContain('Rua+General+Vitorino+77');
+    expect(result.timezone).toBe('America/Sao_Paulo');
   });
 
   it('rejects an address that cannot be located', async () => {

@@ -8,17 +8,19 @@ import {
 } from 'class-validator';
 
 export class UpsertUnitDto {
+  @IsOptional()
   @IsString()
   @MaxLength(50)
-  key!: string;
+  key?: string;
 
   @IsString()
   @MaxLength(150)
   label!: string;
 
+  @IsOptional()
   @IsString()
   @MaxLength(50)
-  shortLabel!: string;
+  shortLabel?: string;
 
   @IsString()
   @MaxLength(300)

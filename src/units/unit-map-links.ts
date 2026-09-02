@@ -1,6 +1,9 @@
+import tzlookup from 'tz-lookup';
+
 export interface UnitMapLinks {
   mapSrc: string;
   mapsHref: string;
+  timezone: string;
 }
 
 interface NominatimResult {
@@ -61,5 +64,6 @@ export async function generateUnitMapLinks(
   return {
     mapSrc: embedUrl.toString(),
     mapsHref: googleUrl.toString(),
+    timezone: tzlookup(latitude, longitude),
   };
 }

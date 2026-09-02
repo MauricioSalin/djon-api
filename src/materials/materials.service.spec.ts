@@ -108,12 +108,12 @@ describe('MaterialsService - capa automática', () => {
     expect(createdBody).not.toContain('style');
   });
 
-  it('preserva somente vídeos incorporados do YouTube', async () => {
+  it('preserva incorporações seguras do YouTube e Sketchfab', async () => {
     await service.create(
       {
         title: 'Material com vídeo',
         categoryId,
-        body: '<div data-video-layout="left" data-video-width="50%"><iframe src="https://www.youtube-nocookie.com/embed/abcDEF123" title="Aula" loading="lazy" allowfullscreen></iframe></div><iframe src="https://malicioso.example/video"></iframe>',
+        body: '<div data-video-layout="left" data-video-width="50%"><iframe src="https://www.youtube-nocookie.com/embed/abcDEF123" title="Aula" loading="lazy" allowfullscreen></iframe></div><div data-video-layout="left" data-video-width="50%" data-video-kind="embed" data-video-transparent="true"><iframe src="https://sketchfab.com/models/modelo-seguro/embed?transparent=1" title="Modelo 3D" loading="lazy" allow="autoplay; fullscreen" allowfullscreen allowtransparency="true" mozallowfullscreen webkitallowfullscreen xr-spatial-tracking execution-while-out-of-viewport execution-while-not-rendered web-share referrerpolicy="strict-origin-when-cross-origin"></iframe><div data-video-text="true"><p>Texto lateral</p></div></div><p>Texto abaixo</p><iframe src="https://malicioso.example/video"></iframe>',
       },
       actor,
     );
@@ -127,7 +127,18 @@ describe('MaterialsService - capa automática', () => {
     expect(createdBody).toContain(
       'src="https://www.youtube-nocookie.com/embed/abcDEF123"',
     );
+    expect(createdBody).toContain('data-video-kind="embed"');
+    expect(createdBody).toContain('data-video-transparent="true"');
+    expect(createdBody).toContain(
+      'src="https://sketchfab.com/models/modelo-seguro/embed?transparent=1"',
+    );
+    expect(createdBody).toContain('allowtransparency="true"');
+    expect(createdBody).toContain('execution-while-not-rendered');
+    expect(createdBody).toContain('data-video-text="true"');
+    expect(createdBody).toContain('Texto lateral');
+    expect(createdBody).toContain('Texto abaixo');
     expect(createdBody).not.toContain('malicioso.example');
+    expect(createdBody).not.toContain('<iframe></iframe>');
   });
 
   it('salva rascunho incompleto sem notificar alunos', async () => {

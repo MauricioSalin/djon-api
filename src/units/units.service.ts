@@ -26,9 +26,11 @@ export class UnitsService {
   async create(dto: UpsertUnitDto) {
     try {
       const mapLinks = await this.generateMapLinks(dto.address);
+      const generatedNames = this.generateInternalNames(dto.label);
       return await this.unitModel.create({
         ...dto,
-        key: dto.key.toLowerCase().trim(),
+        key: dto.key?.toLowerCase().trim() || generatedNames.key,
+        shortLabel: dto.shortLabel?.trim() || generatedNames.shortLabel,
         ...mapLinks,
       });
     } catch (error: unknown) {
@@ -45,10 +47,19 @@ export class UnitsService {
       const mapLinks =
         addressChanged || !current.mapSrc || !current.mapsHref
           ? await this.generateMapLinks(dto.address)
-          : { mapSrc: current.mapSrc, mapsHref: current.mapsHref };
+          : {
+              mapSrc: current.mapSrc,
+              mapsHref: current.mapsHref,
+              timezone: current.timezone,
+            };
       const unit = await this.unitModel.findByIdAndUpdate(
         id,
-        { ...dto, key: dto.key.toLowerCase().trim(), ...mapLinks },
+        {
+          ...dto,
+          key: dto.key?.toLowerCase().trim() || current.key,
+          shortLabel: dto.shortLabel?.trim() || current.shortLabel,
+          ...mapLinks,
+        },
         {
           returnDocument: 'after',
           runValidators: true,
@@ -73,7 +84,13 @@ export class UnitsService {
   }
 
   async findDefault() {
-    return this.unitModel.findOne({ key: 'poa', active: true }).exec();
+    const legacyDefault = await this.unitModel
+      .findOne({ key: 'poa', active: true })
+      .exec();
+    return (
+      legacyDefault ??
+      this.unitModel.findOne({ active: true }).sort({ label: 1 }).exec()
+    );
   }
 
   async findActiveById(id: string) {
@@ -97,6 +114,19 @@ export class UnitsService {
     ) {
       throw new ConflictException('Identificador de unidade já cadastrado.');
     }
+  }
+
+  private generateInternalNames(label: string) {
+    const city = label.split('/')[0]?.trim() || label.trim();
+    const key = label
+      .normalize('NFD')
+      .replace(/[\u0300-\u036f]/g, '')
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, '-')
+      .replace(/^-|-$/g, '')
+      .slice(0, 50);
+
+    return { key, shortLabel: city.slice(0, 50) };
   }
 
   private async generateMapLinks(address: string) {

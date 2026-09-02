@@ -15,6 +15,16 @@ import { UnitsService } from '../src/units/units.service';
 import { UsersService } from '../src/users/users.service';
 import { MailService } from '../src/mail/mail.service';
 
+jest.mock('../src/units/unit-map-links', () => ({
+  generateUnitMapLinks: jest.fn(() =>
+    Promise.resolve({
+      mapSrc: 'https://www.openstreetmap.org/export/embed.html',
+      mapsHref: 'https://www.google.com/maps/search/',
+      timezone: 'America/Sao_Paulo',
+    }),
+  ),
+}));
+
 describe('DJ ON API (e2e)', () => {
   let app: INestApplication;
   let connection: Connection;
