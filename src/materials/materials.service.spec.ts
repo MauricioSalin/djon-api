@@ -26,6 +26,9 @@ describe('MaterialsService - capa automática', () => {
       type: MaterialCategoryType.Library,
     }),
   };
+  const courseModel = {
+    findOne: jest.fn(),
+  };
   const usersService = {
     findActiveByRoles: jest.fn().mockResolvedValue([]),
   };
@@ -36,7 +39,7 @@ describe('MaterialsService - capa automática', () => {
   const service = new MaterialsService(
     materialModel as never,
     categoryModel as never,
-    {} as never,
+    courseModel as never,
     {} as never,
     usersService as never,
     notificationsService as never,
@@ -45,6 +48,8 @@ describe('MaterialsService - capa automática', () => {
 
   beforeEach(() => {
     jest.clearAllMocks();
+    usersService.findActiveByRoles.mockResolvedValue([]);
+    courseModel.findOne.mockResolvedValue(null);
     jest
       .spyOn(service, 'findOne')
       .mockResolvedValue({ id: materialId } as never);
@@ -160,6 +165,58 @@ describe('MaterialsService - capa automática', () => {
     expect(categoryModel.findOne).not.toHaveBeenCalled();
     expect(usersService.findActiveByRoles).not.toHaveBeenCalled();
     expect(notificationsService.createForRecipients).not.toHaveBeenCalled();
+  });
+
+  it('notifica alunos ativos quando um material avulso é publicado', async () => {
+    const studentId = new Types.ObjectId();
+    usersService.findActiveByRoles.mockResolvedValue([{ _id: studentId }]);
+
+    await service.create(
+      {
+        title: 'Fundamentos de mixagem',
+        categoryId,
+        status: MaterialStatus.Published,
+      },
+      actor,
+    );
+
+    expect(usersService.findActiveByRoles).toHaveBeenCalledWith([Role.Student]);
+    expect(notificationsService.createForRecipients).toHaveBeenCalledWith(
+      [studentId.toString()],
+      expect.objectContaining({
+        type: 'material.published',
+        title: 'Novo material disponível',
+      }),
+    );
+  });
+
+  it('notifica alunos também quando um material de curso é publicado', async () => {
+    const studentId = new Types.ObjectId();
+    const courseId = new Types.ObjectId();
+    const courseCategoryId = new Types.ObjectId();
+    courseModel.findOne.mockResolvedValue({
+      _id: courseId,
+      categoryId: courseCategoryId,
+    });
+    categoryModel.findOne.mockResolvedValue({
+      _id: courseCategoryId,
+      type: MaterialCategoryType.Course,
+    });
+    usersService.findActiveByRoles.mockResolvedValue([{ _id: studentId }]);
+
+    await service.create(
+      {
+        title: 'Aula do curso',
+        courseId: courseId.toString(),
+        status: MaterialStatus.Published,
+      },
+      actor,
+    );
+
+    expect(notificationsService.createForRecipients).toHaveBeenCalledWith(
+      [studentId.toString()],
+      expect.objectContaining({ type: 'material.published' }),
+    );
   });
 
   it('mantém publicação dependente de título e categoria', async () => {

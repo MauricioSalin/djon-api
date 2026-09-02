@@ -63,6 +63,52 @@ export class NotificationsService {
     return this.create({ recipientIds, ...data });
   }
 
+  async createForRecipientsOnce(
+    recipientIds: string[],
+    data: Omit<CreateNotificationDto, 'recipientIds'>,
+    dedupeKey: string,
+  ) {
+    const documents = await Promise.all(
+      [...new Set(recipientIds)].map(async (recipientId) => {
+        const result = await this.notificationModel.updateOne(
+          {
+            recipientId: new Types.ObjectId(recipientId),
+            dedupeKey,
+          },
+          {
+            $setOnInsert: {
+              recipientId: new Types.ObjectId(recipientId),
+              type: data.type,
+              title: data.title,
+              body: data.body,
+              url: data.url ?? '/',
+              metadata: data.metadata ?? {},
+              dedupeKey,
+            },
+          },
+          { upsert: true },
+        );
+        if (!result.upsertedId) return null;
+        const document = await this.notificationModel
+          .findById(result.upsertedId)
+          .exec();
+        if (document) await this.sendPush(document);
+        return document;
+      }),
+    );
+    return documents.filter((document) => document !== null);
+  }
+
+  async wasRecentlyCreated(recipientId: string, type: string, since: Date) {
+    return Boolean(
+      await this.notificationModel.exists({
+        recipientId: new Types.ObjectId(recipientId),
+        type,
+        createdAt: { $gte: since },
+      }),
+    );
+  }
+
   async findMine(userId: string, unreadOnly = false) {
     return this.notificationModel
       .find({

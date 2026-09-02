@@ -24,6 +24,9 @@ export class Notification {
   @Prop({ type: Object, default: {} })
   metadata!: Record<string, unknown>;
 
+  @Prop({ trim: true, maxlength: 250 })
+  dedupeKey?: string;
+
   @Prop({ index: true })
   readAt?: Date;
 
@@ -33,3 +36,10 @@ export class Notification {
 
 export const NotificationSchema = SchemaFactory.createForClass(Notification);
 NotificationSchema.index({ recipientId: 1, createdAt: -1 });
+NotificationSchema.index(
+  { recipientId: 1, dedupeKey: 1 },
+  {
+    unique: true,
+    partialFilterExpression: { dedupeKey: { $type: 'string' } },
+  },
+);

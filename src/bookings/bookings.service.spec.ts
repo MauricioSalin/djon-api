@@ -661,6 +661,75 @@ describe('BookingsService - recursos e disponibilidade', () => {
     expect(bookingModel.findByIdAndDelete).toHaveBeenCalledWith(bookingId);
   });
 
+  it('notifica o aluno quando uma aula avulsa é criada', async () => {
+    const studentId = new Types.ObjectId();
+    const bookingId = new Types.ObjectId();
+
+    await service['notifyBookingCreated'](
+      {
+        id: bookingId.toString(),
+        studentId,
+        unitId,
+        title: 'Mentoria individual',
+        date: '2030-08-20',
+        time: '18:00',
+        durationMinutes: 60,
+        type: BookingType.Lesson,
+      } as never,
+      { id: actorId, email: 'admin@teste.com', role: Role.Admin },
+      false,
+    );
+
+    expect(notificationsService.createForRecipients).toHaveBeenCalledWith(
+      [studentId.toString()],
+      expect.objectContaining({
+        type: 'lesson.created',
+        title: 'Nova aula agendada',
+      }),
+    );
+  });
+
+  it('notifica o professor quando o aluno cancela o agendamento', async () => {
+    const bookingId = new Types.ObjectId().toString();
+    const professorId = new Types.ObjectId();
+    const studentId = new Types.ObjectId();
+    const booking = {
+      id: bookingId,
+      studentId,
+      professorId,
+      unitId,
+      title: 'Aula avulsa',
+      date: '2030-08-20',
+      time: '18:00',
+      durationMinutes: 60,
+      type: BookingType.Lesson,
+      status: BookingStatus.Confirmed,
+      resourceKey: `professor:${professorId.toString()}`,
+      statusHistory: [],
+      save: jest.fn().mockResolvedValue(undefined),
+    };
+    bookingModel.findById.mockReturnValue({
+      exec: jest.fn().mockResolvedValue(booking),
+    });
+    usersService.findActiveByRole.mockResolvedValueOnce({ _id: professorId });
+    jest.spyOn(service, 'findOne').mockResolvedValue({} as never);
+
+    await service.cancel(bookingId, 'Não poderei comparecer.', {
+      id: studentId.toString(),
+      email: 'aluno@teste.com',
+      role: Role.Student,
+    });
+
+    expect(notificationsService.createForRecipients).toHaveBeenCalledTimes(1);
+    expect(notificationsService.createForRecipients).toHaveBeenCalledWith(
+      [professorId.toString()],
+      expect.objectContaining({
+        type: 'booking.cancelled-by-student',
+        title: 'Agendamento cancelado pelo aluno',
+      }),
+    );
+  });
+
   it('informa quando o agendamento a remover não existe', async () => {
     const bookingId = new Types.ObjectId().toString();
     bookingModel.findByIdAndDelete.mockReturnValue({

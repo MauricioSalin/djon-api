@@ -38,6 +38,7 @@ describe('CoursesService - presença e liberação', () => {
     {} as never,
     {} as never,
     {} as never,
+    {} as never,
   );
   const actor = {
     id: professorId.toString(),
@@ -130,6 +131,7 @@ describe('CoursesService - consulta de observações', () => {
     {} as never,
     {} as never,
     {} as never,
+    {} as never,
   );
 
   beforeEach(() => {
@@ -204,6 +206,7 @@ describe('CoursesService - progresso', () => {
       {} as never,
       {} as never,
       {} as never,
+      {} as never,
     );
 
     await expect(
@@ -270,6 +273,7 @@ describe('CoursesService - progresso', () => {
       {} as never,
       {} as never,
       {} as never,
+      {} as never,
     );
 
     await expect(
@@ -317,6 +321,7 @@ describe('CoursesService - exclusão de curso', () => {
     {} as never,
     {} as never,
     materialModel as never,
+    {} as never,
     {} as never,
     {} as never,
     {} as never,
@@ -376,6 +381,7 @@ describe('CoursesService - edição e exclusão de turma', () => {
     {} as never,
     {} as never,
     bookingsService as never,
+    {} as never,
   );
   const actor = {
     id: new Types.ObjectId().toString(),
@@ -435,6 +441,9 @@ describe('CoursesService - criação de turma', () => {
   const bookingsService = {
     classLessonScheduleConflicts: jest.fn(),
   };
+  const notificationsService = {
+    createForRecipientsOnce: jest.fn(),
+  };
   const service = new CoursesService(
     courseModel as never,
     cohortModel as never,
@@ -445,16 +454,22 @@ describe('CoursesService - criação de turma', () => {
     unitModel as never,
     equipmentModel as never,
     bookingsService as never,
+    notificationsService as never,
   );
 
   beforeEach(() => {
     jest.clearAllMocks();
-    courseModel.findOne.mockResolvedValue({ _id: courseId });
+    courseModel.findOne.mockResolvedValue({ _id: courseId, name: 'Curso DJ' });
     unitModel.findOne.mockResolvedValue({ _id: unitId });
     userModel.findOne.mockResolvedValue({ _id: professorId });
     equipmentModel.findOne.mockResolvedValue({ _id: equipmentId });
     userModel.countDocuments.mockResolvedValue(1);
-    cohortModel.create.mockResolvedValue({ id: cohortId.toString() });
+    cohortModel.create.mockResolvedValue({
+      id: cohortId.toString(),
+      name: 'Turma Devito',
+      courseId,
+      studentIds: [studentId],
+    });
     bookingsService.classLessonScheduleConflicts.mockResolvedValue([]);
     jest.spyOn(service, 'findOneCohort').mockResolvedValue({} as never);
   });
@@ -492,6 +507,14 @@ describe('CoursesService - criação de turma', () => {
       expect.objectContaining({
         unitId: { $in: [unitId, unitId.toString()] },
       }),
+    );
+    expect(notificationsService.createForRecipientsOnce).toHaveBeenCalledWith(
+      [studentId.toString()],
+      expect.objectContaining({
+        type: 'cohort.enrolled',
+        url: '/dashboard/turmas',
+      }),
+      `cohort-enrolled:${cohortId.toString()}`,
     );
   });
 

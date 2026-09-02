@@ -5,6 +5,7 @@ import { EquipmentsModule } from '../equipments/equipments.module';
 import { MaterialsModule } from '../materials/materials.module';
 import { UnitsModule } from '../units/units.module';
 import { UsersModule } from '../users/users.module';
+import { NotificationsModule } from '../notifications/notifications.module';
 import { CoursesController } from './courses.controller';
 import { CoursesService } from './courses.service';
 import { Cohort, CohortSchema } from './schemas/cohort.schema';
@@ -23,6 +24,7 @@ import { Lesson, LessonSchema } from './schemas/lesson.schema';
     UsersModule,
     UnitsModule,
     EquipmentsModule,
+    NotificationsModule,
   ],
   controllers: [CoursesController],
   providers: [CoursesService],

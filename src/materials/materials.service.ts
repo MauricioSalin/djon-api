@@ -69,7 +69,7 @@ export class MaterialsService {
       authorId: new Types.ObjectId(actor.id),
       status,
     });
-    if (status === MaterialStatus.Published && !dto.courseId) {
+    if (status === MaterialStatus.Published) {
       await this.notifyPublished(material);
     }
     return this.findOne(String(material.id), actor);

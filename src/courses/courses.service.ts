@@ -31,6 +31,7 @@ import {
 } from '../materials/schemas/material.schema';
 import { Unit, UnitDocument } from '../units/schemas/unit.schema';
 import { User, UserDocument } from '../users/schemas/user.schema';
+import { NotificationsService } from '../notifications/notifications.service';
 import {
   ConfigureCohortLessonsDto,
   CreateCohortDto,
@@ -63,6 +64,7 @@ export class CoursesService {
     @InjectModel(Equipment.name)
     private readonly equipmentModel: Model<EquipmentDocument>,
     private readonly bookingsService: BookingsService,
+    private readonly notificationsService: NotificationsService,
   ) {}
 
   async findAllCourses(activeOnly = true, actor?: AuthUser) {
@@ -140,7 +142,11 @@ export class CoursesService {
     return { deleted: true };
   }
 
-  async createCohort(dto: CreateCohortDto, actor: AuthUser) {
+  async createCohort(
+    dto: CreateCohortDto,
+    actor: AuthUser,
+    notifyStudents = true,
+  ) {
     const studentIds = [...new Set(dto.studentIds)];
     if (studentIds.length !== dto.studentIds.length) {
       throw new BadRequestException('A lista de alunos contém duplicidades.');
@@ -204,6 +210,9 @@ export class CoursesService {
       durationMinutes: dto.durationMinutes,
       status: CohortStatus.Setup,
     });
+    if (notifyStudents) {
+      await this.notifyCohortCreated(cohort, course.name);
+    }
     return this.findOneCohort(String(cohort.id), actor);
   }
 
@@ -234,7 +243,7 @@ export class CoursesService {
 
     let cohortId: string | undefined;
     try {
-      const cohort = (await this.createCohort(dto, actor)) as {
+      const cohort = (await this.createCohort(dto, actor, false)) as {
         id?: string;
         _id?: unknown;
       };
@@ -371,6 +380,7 @@ export class CoursesService {
       }
       cohort.status = CohortStatus.Active;
       await cohort.save();
+      await this.notifyCohortCreated(cohort);
       return this.findOneCohort(id, actor);
     } catch (error) {
       await Promise.all([
@@ -726,6 +736,36 @@ export class CoursesService {
       return this.referenceId(value._id);
     }
     return '';
+  }
+
+  private async notifyCohortCreated(
+    cohort: CohortDocument,
+    courseName?: string,
+  ) {
+    const resolvedCourseName =
+      courseName ??
+      (
+        await this.courseModel
+          .findById(cohort.courseId)
+          .select('name')
+          .lean()
+          .exec()
+      )?.name ??
+      'seu curso';
+    await this.notificationsService.createForRecipientsOnce(
+      cohort.studentIds.map(String),
+      {
+        type: 'cohort.enrolled',
+        title: 'Você entrou em uma nova turma',
+        body: `${resolvedCourseName} — ${cohort.name}.`,
+        url: '/dashboard/turmas',
+        metadata: {
+          cohortId: String(cohort.id),
+          courseId: String(cohort.courseId),
+        },
+      },
+      `cohort-enrolled:${String(cohort.id)}`,
+    );
   }
 
   private async ensureCoursesCategory() {

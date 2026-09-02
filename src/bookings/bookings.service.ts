@@ -176,7 +176,7 @@ export class BookingsService {
           },
         ],
       });
-      await this.notifyBookingCreated(booking, actor);
+      await this.notifyBookingCreated(booking, actor, courseWorkflow);
       return this.findOne(String(booking.id), actor);
     } catch (error: unknown) {
       this.handleConflict(error);
@@ -720,8 +720,16 @@ export class BookingsService {
       throw new ForbiddenException('Agendamento pertence a outro aluno.');
     }
     if (!this.isActiveStatus(booking.status)) return booking;
-    await this.changeStatus(booking, BookingStatus.Cancelled, actor, reason);
-    if (actor.role !== Role.Student) {
+    await this.changeStatus(
+      booking,
+      BookingStatus.Cancelled,
+      actor,
+      reason,
+      false,
+    );
+    if (actor.role === Role.Student) {
+      await this.notifyBookingCancelledByStudent(booking, actor);
+    } else {
       await this.notifyStudent(booking, BookingStatus.Cancelled, reason);
     }
     return this.findOne(id, actor);
@@ -1444,19 +1452,68 @@ export class BookingsService {
   private async notifyBookingCreated(
     booking: BookingDocument,
     actor: AuthUser,
+    courseWorkflow: boolean,
   ) {
-    if (actor.role !== Role.Student) return;
-    const managers = await this.usersService.findActiveReviewers(
-      String(booking.unitId),
-    );
+    if (actor.role === Role.Student) {
+      const managers = await this.usersService.findActiveReviewers(
+        String(booking.unitId),
+      );
+      await this.notificationsService.createForRecipients(
+        managers.map((manager) => String(manager._id)),
+        {
+          type: 'booking.requested',
+          title: 'Nova solicitação de treino',
+          body: `${booking.title} em ${booking.date} às ${booking.time}, por ${booking.durationMinutes / 60} ${booking.durationMinutes === 60 ? 'hora' : 'horas'}.`,
+          url: '/dashboard/agenda',
+          metadata: { bookingId: String(booking.id) },
+        },
+      );
+      return;
+    }
+
+    if (booking.type === BookingType.Lesson && !courseWorkflow) {
+      await this.notificationsService.createForRecipients(
+        [String(booking.studentId)],
+        {
+          type: 'lesson.created',
+          title: 'Nova aula agendada',
+          body: `${booking.title} em ${booking.date} às ${booking.time}.`,
+          url: '/dashboard/student/agendar',
+          metadata: { bookingId: String(booking.id) },
+        },
+      );
+    }
+  }
+
+  private async notifyBookingCancelledByStudent(
+    booking: BookingDocument,
+    actor: AuthUser,
+  ) {
+    let recipientIds: string[] = [];
+    if (booking.professorId) {
+      const professor = await this.usersService.findActiveByRole(
+        String(booking.professorId),
+        Role.Professor,
+      );
+      if (professor) recipientIds = [String(professor._id ?? professor.id)];
+    }
+    if (recipientIds.length === 0) {
+      const managers = await this.usersService.findActiveReviewers(
+        String(booking.unitId),
+      );
+      recipientIds = managers.map((manager) => String(manager._id));
+    }
     await this.notificationsService.createForRecipients(
-      managers.map((manager) => String(manager._id)),
+      recipientIds.filter((recipientId) => recipientId !== actor.id),
       {
-        type: 'booking.requested',
-        title: 'Nova solicitação de treino',
-        body: `${booking.title} em ${booking.date} às ${booking.time}, por ${booking.durationMinutes / 60} ${booking.durationMinutes === 60 ? 'hora' : 'horas'}.`,
+        type: 'booking.cancelled-by-student',
+        title: 'Agendamento cancelado pelo aluno',
+        body: `${booking.title} em ${booking.date} às ${booking.time}.`,
         url: '/dashboard/agenda',
-        metadata: { bookingId: String(booking.id) },
+        metadata: {
+          bookingId: String(booking.id),
+          studentId: String(booking.studentId),
+        },
       },
     );
   }
